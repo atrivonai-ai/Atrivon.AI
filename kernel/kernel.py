@@ -1,5 +1,6 @@
 from kernel.executor import Executor
 from kernel.planner import Planner
+from kernel.progress import ProgressTracker
 from kernel.reasoner import Reasoner
 from kernel.state import GoalState
 
@@ -11,20 +12,25 @@ class AtrivonKernel:
     Every goal enters the system through the Kernel.
     The Kernel coordinates Atrivon's intelligence modules
     and manages the lifecycle of the goal from planning
-    through execution.
+    through execution and progress tracking.
 
-    The Kernel also stores the latest execution results so
-    Atrivon can understand the state of subgoals and tasks.
+    The Kernel currently coordinates:
+    - Planner
+    - Reasoner
+    - Executor
+    - Progress Tracker
     """
 
     def __init__(self):
         self.planner = Planner()
         self.reasoner = Reasoner()
         self.executor = Executor()
+        self.progress_tracker = ProgressTracker()
 
         self.current_goal = None
         self.current_plan = None
         self.current_execution_result = None
+        self.current_progress = None
         self.current_state = None
 
         print("Atrivon Kernel initialized.")
@@ -41,6 +47,10 @@ class AtrivonKernel:
             ↓
         IN_PROGRESS
             ↓
+        EXECUTION
+            ↓
+        PROGRESS TRACKING
+            ↓
         COMPLETED
 
         If planning or execution fails, the goal moves
@@ -56,6 +66,7 @@ class AtrivonKernel:
         self.current_goal = goal
         self.current_plan = None
         self.current_execution_result = None
+        self.current_progress = None
         self.current_state = GoalState.PLANNED
 
         print(f"\nGoal received: {goal}")
@@ -105,11 +116,21 @@ class AtrivonKernel:
             "status"
         )
 
+        self.current_progress = (
+            self.progress_tracker.calculate_progress(
+                execution_result
+            )
+        )
+
+        self.progress_tracker.display_progress(
+            self.current_progress
+        )
+
         if execution_status == "completed":
             self.current_state = GoalState.COMPLETED
 
             print(
-                f"Goal state: {self.current_state.value}"
+                f"\nGoal state: {self.current_state.value}"
             )
             print("Goal completed successfully.")
 
@@ -117,7 +138,7 @@ class AtrivonKernel:
             self.current_state = GoalState.BLOCKED
 
             print(
-                f"Goal state: {self.current_state.value}"
+                f"\nGoal state: {self.current_state.value}"
             )
             print(
                 "Execution could not be completed."
@@ -156,3 +177,10 @@ class AtrivonKernel:
         """
 
         return self.current_execution_result
+
+    def get_current_progress(self):
+        """
+        Return the latest progress report for the active goal.
+        """
+
+        return self.current_progress
