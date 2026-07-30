@@ -12,6 +12,9 @@ class AtrivonKernel:
     The Kernel coordinates Atrivon's intelligence modules
     and manages the lifecycle of the goal from planning
     through execution.
+
+    The Kernel also stores the latest execution results so
+    Atrivon can understand the state of subgoals and tasks.
     """
 
     def __init__(self):
@@ -98,7 +101,19 @@ class AtrivonKernel:
 
         self.current_execution_result = execution_result
 
-        if execution_result.get("status") != "completed":
+        execution_status = execution_result.get(
+            "status"
+        )
+
+        if execution_status == "completed":
+            self.current_state = GoalState.COMPLETED
+
+            print(
+                f"Goal state: {self.current_state.value}"
+            )
+            print("Goal completed successfully.")
+
+        else:
             self.current_state = GoalState.BLOCKED
 
             print(
@@ -108,13 +123,36 @@ class AtrivonKernel:
                 "Execution could not be completed."
             )
 
-            return execution_result
-
-        self.current_state = GoalState.COMPLETED
-
-        print(
-            f"Goal state: {self.current_state.value}"
-        )
-        print("Goal completed successfully.")
-
         return execution_result
+
+    def get_current_state(self):
+        """
+        Return the current state of the active goal.
+        """
+
+        if self.current_state is None:
+            return None
+
+        return self.current_state.value
+
+    def get_current_goal(self):
+        """
+        Return the current goal.
+        """
+
+        return self.current_goal
+
+    def get_current_plan(self):
+        """
+        Return the current structured plan.
+        """
+
+        return self.current_plan
+
+    def get_current_execution_result(self):
+        """
+        Return the latest execution result, including
+        subgoal and task-level execution states.
+        """
+
+        return self.current_execution_result

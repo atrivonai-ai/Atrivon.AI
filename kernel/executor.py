@@ -1,15 +1,21 @@
+from kernel.task_state import TaskState
+
+
 class Executor:
     """
     The Executor is responsible for coordinating the execution
     of an approved Atrivon plan.
 
-    This first implementation establishes the execution framework
-    for hierarchical plans. It processes subgoals and tasks in order
-    and records the execution result of each task.
+    The Executor processes a hierarchical plan containing:
+    - A goal
+    - Subgoals
+    - Tasks
 
-    The current version does not yet perform external real-world
-    actions. It establishes the architecture that future execution
-    capabilities will build upon.
+    Each task has its own lifecycle state.
+
+    The current implementation establishes the execution
+    lifecycle framework. It does not yet perform arbitrary
+    real-world actions.
     """
 
     def __init__(self):
@@ -21,15 +27,16 @@ class Executor:
 
         Returns a structured execution result containing:
         - The original goal
-        - The execution status
-        - Results for each subgoal
-        - Results for each task
+        - The overall execution status
+        - Subgoal execution results
+        - Task execution states
         """
 
         print("\nStarting plan execution...")
 
         if not isinstance(plan, dict):
             print("Execution failed: invalid plan format.")
+
             return {
                 "goal": None,
                 "status": "failed",
@@ -41,6 +48,7 @@ class Executor:
 
         if not isinstance(goal, str) or not goal.strip():
             print("Execution failed: missing goal.")
+
             return {
                 "goal": goal,
                 "status": "failed",
@@ -49,6 +57,7 @@ class Executor:
 
         if not isinstance(subgoals, list) or not subgoals:
             print("Execution failed: no subgoals available.")
+
             return {
                 "goal": goal,
                 "status": "failed",
@@ -77,57 +86,102 @@ class Executor:
                 tasks,
                 start=1,
             ):
-                print(
-                    f"  Executing task "
-                    f"{subgoal_number}.{task_number}: {task}"
+                task_result = self._execute_task(
+                    task=task,
+                    task_number=task_number,
+                    subgoal_number=subgoal_number,
                 )
 
-                task_result = self._execute_task(task)
+                task_results.append(task_result)
 
-                task_results.append(
-                    {
-                        "task": task,
-                        "status": task_result["status"],
-                        "message": task_result["message"],
-                    }
-                )
+            subgoal_completed = all(
+                task_result["state"] == TaskState.COMPLETED.value
+                for task_result in task_results
+            )
 
-                print(
-                    f"  Task status: "
-                    f"{task_result['status']}"
-                )
+            if subgoal_completed:
+                subgoal_status = "completed"
+            else:
+                subgoal_status = "blocked"
 
             execution_results.append(
                 {
                     "subgoal": subgoal_name,
-                    "status": "completed",
+                    "status": subgoal_status,
                     "tasks": task_results,
                 }
             )
 
-        print("\nPlan execution completed.")
+            print(
+                f"Subgoal status: {subgoal_status}"
+            )
+
+        overall_completed = all(
+            subgoal_result["status"] == "completed"
+            for subgoal_result in execution_results
+        )
+
+        if overall_completed:
+            overall_status = "completed"
+            print("\nPlan execution completed.")
+        else:
+            overall_status = "blocked"
+            print(
+                "\nPlan execution stopped: "
+                "one or more subgoals are blocked."
+            )
 
         return {
             "goal": goal,
-            "status": "completed",
+            "status": overall_status,
             "subgoals": execution_results,
         }
 
-    def _execute_task(self, task):
+    def _execute_task(
+        self,
+        task,
+        task_number,
+        subgoal_number,
+    ):
         """
-        Process a single task through the current execution framework.
+        Process one task through the task lifecycle.
 
-        This method currently acknowledges the task and marks it
-        as completed within the execution simulation.
+        The current implementation transitions the task from
+        pending to in_progress to completed.
 
-        Future versions will replace this with real execution
-        capabilities.
+        Future versions will perform real actions and will be
+        able to transition tasks into blocked, failed,
+        requires_input, or needs_revision states.
         """
+
+        print(
+            f"  Task "
+            f"{subgoal_number}.{task_number}: {task}"
+        )
+
+        task_state = TaskState.PENDING
+
+        print(
+            f"  Task state: {task_state.value}"
+        )
+
+        task_state = TaskState.IN_PROGRESS
+
+        print(
+            f"  Task state: {task_state.value}"
+        )
+
+        task_state = TaskState.COMPLETED
+
+        print(
+            f"  Task state: {task_state.value}"
+        )
 
         return {
-            "status": "completed",
+            "task": task,
+            "state": task_state.value,
             "message": (
-                f"Task processed by the Atrivon execution framework: "
-                f"{task}"
+                "Task processed by the Atrivon "
+                "execution framework."
             ),
         }
