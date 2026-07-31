@@ -1,91 +1,113 @@
+from atrivon.domain.models import Plan
+
+
 class Reasoner:
     """
-    The Reasoner evaluates the structure and quality of plans
-    before they move toward execution.
+    The Reasoner evaluates the structure and validity of
+    canonical Atrivon Plan objects.
 
-    Its current responsibility is to validate that a plan:
-    - Exists
-    - Contains a goal
-    - Contains at least one subgoal
-    - Gives each subgoal at least one task
+    The current implementation performs structural validation.
+
+    Future versions will expand this responsibility to include:
+    - Strategic evaluation
+    - Risk analysis
+    - Dependency analysis
+    - Alternative strategies
+    - Decision support
+    - Replanning
     """
 
     def __init__(self):
         print("Reasoner module loaded.")
 
-    def evaluate_plan(self, plan):
+    def evaluate_plan(
+        self,
+        plan: Plan,
+    ) -> bool:
         """
-        Evaluate whether a structured plan is valid and
+        Evaluate whether a canonical Plan is valid and
         ready to move forward.
         """
 
         print("\nEvaluating plan...")
 
-        if not isinstance(plan, dict):
-            print("Plan evaluation failed: invalid plan format.")
+        if not isinstance(
+            plan,
+            Plan,
+        ):
+            print(
+                "Plan evaluation failed: "
+                "expected a Plan object."
+            )
             return False
 
-        goal = plan.get("goal")
-        subgoals = plan.get("subgoals")
-
-        if not isinstance(goal, str) or not goal.strip():
-            print("Plan evaluation failed: missing goal.")
+        if not plan.goal_id.strip():
+            print(
+                "Plan evaluation failed: "
+                "missing goal ID."
+            )
             return False
 
-        if not isinstance(subgoals, list) or not subgoals:
-            print("Plan evaluation failed: no subgoals found.")
+        if not plan.subgoals:
+            print(
+                "Plan evaluation failed: "
+                "no subgoals found."
+            )
             return False
+
+        total_tasks = 0
 
         for subgoal_number, subgoal in enumerate(
-            subgoals,
+            plan.subgoals,
             start=1,
         ):
-            if not isinstance(subgoal, dict):
-                print(
-                    f"Plan evaluation failed: "
-                    f"subgoal {subgoal_number} is invalid."
-                )
-                return False
-
-            subgoal_name = subgoal.get("name")
-            tasks = subgoal.get("tasks")
-
-            if not isinstance(subgoal_name, str) or not subgoal_name.strip():
+            if not subgoal.name.strip():
                 print(
                     f"Plan evaluation failed: "
                     f"subgoal {subgoal_number} has no name."
                 )
                 return False
 
-            if not isinstance(tasks, list) or not tasks:
+            if not subgoal.tasks:
                 print(
                     f"Plan evaluation failed: "
-                    f"subgoal '{subgoal_name}' has no tasks."
+                    f"subgoal '{subgoal.name}' "
+                    f"has no tasks."
                 )
                 return False
 
             for task_number, task in enumerate(
-                tasks,
+                subgoal.tasks,
                 start=1,
             ):
-                if not isinstance(task, str) or not task.strip():
+                if not task.title.strip():
                     print(
                         f"Plan evaluation failed: "
-                        f"subgoal '{subgoal_name}' "
-                        f"contains an invalid task at position "
-                        f"{task_number}."
+                        f"subgoal '{subgoal.name}' "
+                        f"contains an invalid task "
+                        f"at position {task_number}."
                     )
                     return False
 
-        total_subgoals = len(subgoals)
-        total_tasks = sum(
-            len(subgoal["tasks"])
-            for subgoal in subgoals
-        )
+                total_tasks += 1
 
         print("Plan evaluation complete.")
-        print(f"Validated subgoals: {total_subgoals}")
-        print(f"Validated tasks: {total_tasks}")
-        print("Status: Plan approved for execution.")
+        print(
+            f"Plan ID: {plan.id}"
+        )
+        print(
+            f"Plan version: {plan.version}"
+        )
+        print(
+            f"Validated subgoals: "
+            f"{len(plan.subgoals)}"
+        )
+        print(
+            f"Validated tasks: "
+            f"{total_tasks}"
+        )
+        print(
+            "Status: Plan approved for execution."
+        )
 
         return True
