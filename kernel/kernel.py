@@ -37,6 +37,7 @@ class AtrivonKernel:
     - Goal pausing
     - Goal resumption
     - Continued execution
+    - Dependency-aware execution readiness
 
     The Kernel orchestrates the system but does not own
     the specialized logic of these components.
@@ -68,7 +69,9 @@ class AtrivonKernel:
             dict[str, Any] | None
         ) = None
 
-        print("Atrivon Kernel initialized.")
+        print(
+            "Atrivon Kernel initialized."
+        )
 
     def _create_memory_repository(
         self,
@@ -134,6 +137,101 @@ class AtrivonKernel:
             snapshot.progress
         )
 
+    def _get_dependency_readiness(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Inspect the current Plan's dependency readiness.
+
+        Returns information about:
+        - Dependency validity
+        - Ready tasks
+        - Dependency-blocked tasks
+        - Tasks that can execute
+        - Whether execution can continue
+        """
+
+        if self.current_plan is None:
+            return {
+                "valid": False,
+                "errors": [
+                    "No active Plan is available."
+                ],
+                "ready_tasks": [],
+                "blocked_tasks": [],
+                "can_continue": False,
+            }
+
+        resolver = (
+            self.executor.dependency_resolver
+        )
+
+        validation = (
+            resolver.validate_plan(
+                self.current_plan
+            )
+        )
+
+        if not validation.valid:
+            return {
+                "valid": False,
+                "errors": list(
+                    validation.errors
+                ),
+                "ready_tasks": [],
+                "blocked_tasks": [],
+                "can_continue": False,
+            }
+
+        ready_tasks = (
+            resolver.get_ready_tasks(
+                self.current_plan
+            )
+        )
+
+        blocked_tasks = (
+            resolver.get_blocked_tasks(
+                self.current_plan
+            )
+        )
+
+        executable_ready_tasks = [
+            task
+            for task in ready_tasks
+            if task.state
+            in {
+                TaskState.PENDING,
+                TaskState.IN_PROGRESS,
+                TaskState.PAUSED,
+            }
+        ]
+
+        return {
+            "valid": True,
+            "errors": [],
+            "ready_tasks": [
+                task.title
+                for task
+                in executable_ready_tasks
+            ],
+            "blocked_tasks": [
+                {
+                    "task": task.title,
+                    "unsatisfied_dependencies": (
+                        resolver.get_unsatisfied_dependencies(
+                            task,
+                            self.current_plan,
+                        )
+                    ),
+                }
+                for task
+                in blocked_tasks
+            ],
+            "can_continue": bool(
+                executable_ready_tasks
+            ),
+        }
+
     def process_goal(
         self,
         objective: str,
@@ -145,7 +243,10 @@ class AtrivonKernel:
         objective = objective.strip()
 
         if not objective:
-            print("\nA goal is required.")
+            print(
+                "\nA goal is required."
+            )
+
             return None
 
         self.current_goal = Goal(
@@ -255,10 +356,6 @@ class AtrivonKernel:
             f"{self.current_goal.state.value}"
         )
 
-        print(
-            "Beginning execution..."
-        )
-
         return self._execute_current_goal()
 
     def _execute_current_goal(
@@ -267,8 +364,12 @@ class AtrivonKernel:
         """
         Execute or continue execution of the active Goal's Plan.
 
-        The Executor is resume-aware and will skip completed
-        tasks while continuing unfinished work.
+        The Executor is resume-aware and dependency-aware.
+
+        Completed tasks are skipped.
+
+        Tasks whose dependencies are incomplete remain blocked
+        until their prerequisites are completed.
         """
 
         if self.current_goal is None:
@@ -286,6 +387,7 @@ class AtrivonKernel:
             not in {
                 GoalState.IN_PROGRESS,
                 GoalState.PAUSED,
+                GoalState.BLOCKED,
             }
         ):
             raise ValueError(
@@ -310,6 +412,30 @@ class AtrivonKernel:
             )
 
         self._persist_current_goal()
+
+        readiness = (
+            self._get_dependency_readiness()
+        )
+
+        if not readiness["valid"]:
+            raise ValueError(
+                "Dependency validation failed: "
+                + " | ".join(
+                    readiness["errors"]
+                )
+            )
+
+        if (
+            not readiness["can_continue"]
+            and readiness["blocked_tasks"]
+        ):
+            print(
+                "\nNo executable tasks are currently ready."
+            )
+
+            print(
+                "The Goal remains blocked by dependencies."
+            )
 
         print(
             "\nBeginning execution..."
@@ -354,7 +480,9 @@ class AtrivonKernel:
                 GoalState.NEEDS_REVISION
             )
 
-        elif execution_status == "blocked":
+        elif execution_status == (
+            PlanState.BLOCKED.value
+        ):
             self.current_goal.update_state(
                 GoalState.BLOCKED
             )
@@ -388,6 +516,9 @@ class AtrivonKernel:
             "progress": (
                 self.current_progress
             ),
+            "dependency_readiness": (
+                self._get_dependency_readiness()
+            ),
         }
 
     def pause_goal(
@@ -399,6 +530,7 @@ class AtrivonKernel:
         Only an IN_PROGRESS Goal can be paused.
 
         Active Plan, Subgoals, and Tasks are moved to PAUSED.
+
         Pending and completed Tasks retain their existing states.
         """
 
@@ -486,8 +618,11 @@ class AtrivonKernel:
 
         PAUSED Goals transition back to IN_PROGRESS.
 
-        BLOCKED, REQUIRES_INPUT, and NEEDS_REVISION Goals
-        are restored but are not automatically resumed.
+        IN_PROGRESS Goals are restored as active.
+
+        BLOCKED Goals are restored as BLOCKED and are not
+        falsely marked active. Their dependency readiness
+        can be inspected before continuing.
 
         COMPLETED Goals cannot be resumed.
         """
@@ -583,6 +718,14 @@ class AtrivonKernel:
                 "marked as in progress."
             )
 
+        elif (
+            self.current_goal.state
+            == GoalState.BLOCKED
+        ):
+            print(
+                "\nGoal restored in BLOCKED state."
+            )
+
         else:
             print(
                 "\nGoal restored but not automatically resumed."
@@ -592,6 +735,29 @@ class AtrivonKernel:
                 f"Current Goal state: "
                 f"{self.current_goal.state.value}"
             )
+
+        readiness = (
+            self._get_dependency_readiness()
+        )
+
+        print(
+            "\nDependency readiness:"
+        )
+
+        print(
+            f"Ready tasks: "
+            f"{readiness['ready_tasks']}"
+        )
+
+        print(
+            f"Blocked tasks: "
+            f"{readiness['blocked_tasks']}"
+        )
+
+        print(
+            f"Can continue: "
+            f"{readiness['can_continue']}"
+        )
 
         return GoalSnapshot(
             goal=self.current_goal,
@@ -608,10 +774,12 @@ class AtrivonKernel:
         """
         Continue execution of the currently active Goal.
 
-        The Goal must be IN_PROGRESS.
+        IN_PROGRESS Goals continue normally.
 
-        Completed tasks are skipped.
-        Unfinished executable tasks continue.
+        BLOCKED Goals may be checked again if their dependency
+        conditions have changed.
+
+        If no executable work is ready, the Goal remains blocked.
         """
 
         if self.current_goal is None:
@@ -626,13 +794,63 @@ class AtrivonKernel:
 
         if (
             self.current_goal.state
-            != GoalState.IN_PROGRESS
+            not in {
+                GoalState.IN_PROGRESS,
+                GoalState.BLOCKED,
+            }
         ):
             raise ValueError(
-                "Only an IN_PROGRESS Goal can continue execution. "
-                f"Current state: "
+                "Goal cannot continue execution from its current state: "
                 f"{self.current_goal.state.value}"
             )
+
+        readiness = (
+            self._get_dependency_readiness()
+        )
+
+        print(
+            "\nCurrent dependency readiness:"
+        )
+
+        print(
+            f"Ready tasks: "
+            f"{readiness['ready_tasks']}"
+        )
+
+        print(
+            f"Blocked tasks: "
+            f"{readiness['blocked_tasks']}"
+        )
+
+        if (
+            not readiness["can_continue"]
+        ):
+            if (
+                readiness["blocked_tasks"]
+            ):
+                print(
+                    "\nGoal cannot continue yet."
+                )
+
+                print(
+                    "Unresolved dependencies remain."
+                )
+
+            return {
+                "goal": (
+                    self.current_goal.to_dict()
+                ),
+                "plan": (
+                    self.current_plan.to_dict()
+                ),
+                "execution_result": (
+                    self.current_execution_result
+                ),
+                "progress": (
+                    self.current_progress
+                ),
+                "dependency_readiness": readiness,
+            }
 
         return self._execute_current_goal()
 
@@ -683,6 +901,15 @@ class AtrivonKernel:
             return None
 
         return self.current_goal.state.value
+
+    def get_current_dependency_readiness(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Return the dependency readiness of the active Plan.
+        """
+
+        return self._get_dependency_readiness()
 
     def get_persisted_goal(
         self,
