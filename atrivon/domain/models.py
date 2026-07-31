@@ -132,9 +132,11 @@ class Task:
         data = asdict(self)
 
         data["state"] = self.state.value
+
         data["created_at"] = (
             self.created_at.isoformat()
         )
+
         data["updated_at"] = (
             self.updated_at.isoformat()
         )
@@ -256,6 +258,7 @@ class Subgoal:
         self.tasks.append(
             task
         )
+
         self.updated_at = utc_now()
 
     def update_state(
@@ -273,6 +276,7 @@ class Subgoal:
             state = SubgoalState(state)
 
         self.state = state
+
         self.updated_at = utc_now()
 
     def to_dict(self) -> dict[str, Any]:
@@ -364,27 +368,43 @@ class Plan:
 
     Plans are versioned so Atrivon can revise a strategy
     without destroying previous plan history.
+
+    A revised Plan can explicitly reference the Plan
+    it supersedes and record why the revision occurred.
     """
 
     goal_id: str
+
     version: int = 1
+
     id: str = field(
         default_factory=generate_id
     )
+
     state: PlanState = PlanState.DRAFT
+
+    supersedes_plan_id: str | None = None
+
+    revision_reason: str = ""
+
     subgoals: list[Subgoal] = field(
         default_factory=list
     )
+
     rationale: str = ""
+
     dependencies: list[str] = field(
         default_factory=list
     )
+
     metadata: dict[str, Any] = field(
         default_factory=dict
     )
+
     created_at: datetime = field(
         default_factory=utc_now
     )
+
     updated_at: datetime = field(
         default_factory=utc_now
     )
@@ -398,6 +418,14 @@ class Plan:
         if self.version < 1:
             raise ValueError(
                 "Plan version must be at least 1."
+            )
+
+        if (
+            self.supersedes_plan_id
+            == self.id
+        ):
+            raise ValueError(
+                "A Plan cannot supersede itself."
             )
 
         if not isinstance(
@@ -427,6 +455,7 @@ class Plan:
         self.subgoals.append(
             subgoal
         )
+
         self.updated_at = utc_now()
 
     def update_state(
@@ -444,6 +473,7 @@ class Plan:
             state = PlanState(state)
 
         self.state = state
+
         self.updated_at = utc_now()
 
     def to_dict(self) -> dict[str, Any]:
@@ -456,11 +486,21 @@ class Plan:
             "goal_id": self.goal_id,
             "version": self.version,
             "state": self.state.value,
+            "supersedes_plan_id": (
+                self.supersedes_plan_id
+            ),
+            "revision_reason": (
+                self.revision_reason
+            ),
             "rationale": self.rationale,
             "dependencies": self.dependencies,
             "metadata": self.metadata,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": (
+                self.created_at.isoformat()
+            ),
+            "updated_at": (
+                self.updated_at.isoformat()
+            ),
             "subgoals": [
                 subgoal.to_dict()
                 for subgoal in self.subgoals
@@ -509,6 +549,13 @@ class Plan:
                     PlanState.DRAFT.value,
                 )
             ),
+            supersedes_plan_id=data.get(
+                "supersedes_plan_id"
+            ),
+            revision_reason=data.get(
+                "revision_reason",
+                "",
+            ),
             subgoals=subgoals,
             rationale=data.get(
                 "rationale",
@@ -544,21 +591,29 @@ class Goal:
     """
 
     objective: str
+
     context: str = ""
+
     id: str = field(
         default_factory=generate_id
     )
+
     state: GoalState = GoalState.PLANNED
+
     plan_ids: list[str] = field(
         default_factory=list
     )
+
     active_plan_id: str | None = None
+
     metadata: dict[str, Any] = field(
         default_factory=dict
     )
+
     created_at: datetime = field(
         default_factory=utc_now
     )
+
     updated_at: datetime = field(
         default_factory=utc_now
     )
@@ -604,6 +659,7 @@ class Goal:
             )
 
         self.active_plan_id = plan.id
+
         self.updated_at = utc_now()
 
     def update_state(
@@ -621,6 +677,7 @@ class Goal:
             state = GoalState(state)
 
         self.state = state
+
         self.updated_at = utc_now()
 
     def to_dict(self) -> dict[str, Any]:
@@ -636,8 +693,12 @@ class Goal:
             "plan_ids": self.plan_ids,
             "active_plan_id": self.active_plan_id,
             "metadata": self.metadata,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": (
+                self.created_at.isoformat()
+            ),
+            "updated_at": (
+                self.updated_at.isoformat()
+            ),
         }
 
     @classmethod
