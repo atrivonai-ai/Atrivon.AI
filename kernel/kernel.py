@@ -9,6 +9,9 @@ from atrivon.domain.states import (
     SubgoalState,
     TaskState,
 )
+from atrivon.execution.replanning import (
+    AdaptiveReplanner,
+)
 from atrivon.memory.json_repository import (
     JsonMemoryRepository,
 )
@@ -38,6 +41,7 @@ class AtrivonKernel:
     - Goal resumption
     - Continued execution
     - Dependency-aware execution readiness
+    - Adaptive replanning
 
     The Kernel orchestrates the system but does not own
     the specialized logic of these components.
@@ -45,9 +49,21 @@ class AtrivonKernel:
 
     def __init__(self):
         self.planner = Planner()
+
         self.reasoner = Reasoner()
+
         self.executor = Executor()
-        self.progress_tracker = ProgressTracker()
+
+        self.progress_tracker = (
+            ProgressTracker()
+        )
+
+        self.adaptive_replanner = (
+            AdaptiveReplanner(
+                planner=self.planner,
+                reasoner=self.reasoner,
+            )
+        )
 
         self.memory_repository = (
             self._create_memory_repository()
@@ -232,6 +248,156 @@ class AtrivonKernel:
             ),
         }
 
+    def _attempt_adaptive_replan(
+        self,
+        execution_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Analyze an execution problem and, when appropriate,
+        replace the active Plan with a revised strategy.
+
+        Returns:
+            Structured replanning information if a new Plan
+            was created, otherwise None.
+        """
+
+        if self.current_goal is None:
+            return None
+
+        if self.current_plan is None:
+            return None
+
+        can_replan = (
+            self.adaptive_replanner.can_replan(
+                goal=self.current_goal,
+                current_plan=self.current_plan,
+                execution_result=execution_result,
+            )
+        )
+
+        if not can_replan:
+            return None
+
+        print(
+            "\nAdaptive replanning triggered."
+        )
+
+        adaptive_result = (
+            self.adaptive_replanner.replan(
+                goal=self.current_goal,
+                current_plan=self.current_plan,
+                execution_result=execution_result,
+            )
+        )
+
+        previous_plan_id = (
+            self.current_plan.id
+        )
+
+        self.current_plan = (
+            adaptive_result.revised_plan
+        )
+
+        self.current_goal.update_state(
+            GoalState.IN_PROGRESS
+        )
+
+        self.current_progress = (
+            self.progress_tracker.calculate_progress(
+                self.current_plan
+            )
+        )
+
+        self.current_execution_result = {
+            "status": "replanned",
+            "previous_execution": (
+                execution_result
+            ),
+            "replanning": {
+                "previous_plan_id": (
+                    previous_plan_id
+                ),
+                "new_plan_id": (
+                    adaptive_result.revision
+                    .new_plan_id
+                ),
+                "previous_version": (
+                    adaptive_result.revision
+                    .previous_version
+                ),
+                "new_version": (
+                    adaptive_result.revision
+                    .new_version
+                ),
+                "reason": (
+                    adaptive_result.revision
+                    .reason
+                ),
+                "analysis": (
+                    adaptive_result.analysis
+                ),
+            },
+        }
+
+        self._persist_current_goal()
+
+        print(
+            "\nAdaptive replanning completed."
+        )
+
+        print(
+            f"Previous Plan: "
+            f"{previous_plan_id}"
+        )
+
+        print(
+            f"New Plan: "
+            f"{self.current_plan.id}"
+        )
+
+        print(
+            f"New Plan Version: "
+            f"{self.current_plan.version}"
+        )
+
+        print(
+            "New Plan State: "
+            f"{self.current_plan.state.value}"
+        )
+
+        print(
+            f"Goal State: "
+            f"{self.current_goal.state.value}"
+        )
+
+        return {
+            "analysis": (
+                adaptive_result.analysis
+            ),
+            "revision": {
+                "previous_plan_id": (
+                    adaptive_result.revision
+                    .previous_plan_id
+                ),
+                "new_plan_id": (
+                    adaptive_result.revision
+                    .new_plan_id
+                ),
+                "previous_version": (
+                    adaptive_result.revision
+                    .previous_version
+                ),
+                "new_version": (
+                    adaptive_result.revision
+                    .new_version
+                ),
+                "reason": (
+                    adaptive_result.revision
+                    .reason
+                ),
+            },
+        }
+
     def process_goal(
         self,
         objective: str,
@@ -364,12 +530,15 @@ class AtrivonKernel:
         """
         Execute or continue execution of the active Goal's Plan.
 
-        The Executor is resume-aware and dependency-aware.
+        When execution fails or becomes blocked:
 
-        Completed tasks are skipped.
-
-        Tasks whose dependencies are incomplete remain blocked
-        until their prerequisites are completed.
+        1. The result is analyzed.
+        2. Adaptive replanning may be triggered.
+        3. The previous Plan is superseded.
+        4. The revised Plan becomes active.
+        5. The Goal remains IN_PROGRESS.
+        6. The revised Plan is persisted.
+        7. Execution can continue through continue_goal().
         """
 
         if self.current_goal is None:
@@ -434,7 +603,7 @@ class AtrivonKernel:
             )
 
             print(
-                "The Goal remains blocked by dependencies."
+                "The Goal may require adaptive replanning."
             )
 
         print(
@@ -446,6 +615,43 @@ class AtrivonKernel:
                 self.current_plan
             )
         )
+
+        adaptive_replanning = (
+            self._attempt_adaptive_replan(
+                execution_result
+            )
+        )
+
+        if adaptive_replanning is not None:
+            print(
+                "\nRevised strategy is now active."
+            )
+
+            print(
+                "Use continue_goal() to execute "
+                "the revised Plan."
+            )
+
+            return {
+                "goal": (
+                    self.current_goal.to_dict()
+                ),
+                "plan": (
+                    self.current_plan.to_dict()
+                ),
+                "execution_result": (
+                    self.current_execution_result
+                ),
+                "progress": (
+                    self.current_progress
+                ),
+                "adaptive_replanning": (
+                    adaptive_replanning
+                ),
+                "dependency_readiness": (
+                    self._get_dependency_readiness()
+                ),
+            }
 
         self.current_execution_result = (
             execution_result
@@ -483,6 +689,11 @@ class AtrivonKernel:
         elif execution_status == (
             PlanState.BLOCKED.value
         ):
+            self.current_goal.update_state(
+                GoalState.BLOCKED
+            )
+
+        elif execution_status == "failed":
             self.current_goal.update_state(
                 GoalState.BLOCKED
             )
@@ -621,8 +832,7 @@ class AtrivonKernel:
         IN_PROGRESS Goals are restored as active.
 
         BLOCKED Goals are restored as BLOCKED and are not
-        falsely marked active. Their dependency readiness
-        can be inspected before continuing.
+        falsely marked active. Dependency readiness is inspected.
 
         COMPLETED Goals cannot be resumed.
         """
@@ -776,10 +986,10 @@ class AtrivonKernel:
 
         IN_PROGRESS Goals continue normally.
 
-        BLOCKED Goals may be checked again if their dependency
-        conditions have changed.
+        BLOCKED Goals are re-evaluated through the dependency
+        system and may trigger adaptive replanning.
 
-        If no executable work is ready, the Goal remains blocked.
+        Completed tasks are skipped.
         """
 
         if self.current_goal is None:
@@ -803,54 +1013,6 @@ class AtrivonKernel:
                 "Goal cannot continue execution from its current state: "
                 f"{self.current_goal.state.value}"
             )
-
-        readiness = (
-            self._get_dependency_readiness()
-        )
-
-        print(
-            "\nCurrent dependency readiness:"
-        )
-
-        print(
-            f"Ready tasks: "
-            f"{readiness['ready_tasks']}"
-        )
-
-        print(
-            f"Blocked tasks: "
-            f"{readiness['blocked_tasks']}"
-        )
-
-        if (
-            not readiness["can_continue"]
-        ):
-            if (
-                readiness["blocked_tasks"]
-            ):
-                print(
-                    "\nGoal cannot continue yet."
-                )
-
-                print(
-                    "Unresolved dependencies remain."
-                )
-
-            return {
-                "goal": (
-                    self.current_goal.to_dict()
-                ),
-                "plan": (
-                    self.current_plan.to_dict()
-                ),
-                "execution_result": (
-                    self.current_execution_result
-                ),
-                "progress": (
-                    self.current_progress
-                ),
-                "dependency_readiness": readiness,
-            }
 
         return self._execute_current_goal()
 
