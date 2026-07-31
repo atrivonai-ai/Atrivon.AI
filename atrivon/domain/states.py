@@ -9,6 +9,7 @@ class GoalState(str, Enum):
     PLANNED = "planned"
     APPROVED = "approved"
     IN_PROGRESS = "in_progress"
+    PAUSED = "paused"
     COMPLETED = "completed"
     BLOCKED = "blocked"
     REQUIRES_INPUT = "requires_input"
@@ -24,6 +25,7 @@ class PlanState(str, Enum):
     PROPOSED = "proposed"
     APPROVED = "approved"
     ACTIVE = "active"
+    PAUSED = "paused"
     COMPLETED = "completed"
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
@@ -37,6 +39,7 @@ class SubgoalState(str, Enum):
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    PAUSED = "paused"
     COMPLETED = "completed"
     BLOCKED = "blocked"
     REQUIRES_INPUT = "requires_input"
@@ -50,6 +53,7 @@ class TaskState(str, Enum):
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    PAUSED = "paused"
     COMPLETED = "completed"
     BLOCKED = "blocked"
     FAILED = "failed"

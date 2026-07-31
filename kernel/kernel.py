@@ -3,7 +3,12 @@ from typing import Any
 
 from atrivon.domain.memory import GoalSnapshot
 from atrivon.domain.models import Goal
-from atrivon.domain.states import GoalState
+from atrivon.domain.states import (
+    GoalState,
+    PlanState,
+    SubgoalState,
+    TaskState,
+)
 from atrivon.memory.json_repository import (
     JsonMemoryRepository,
 )
@@ -28,7 +33,10 @@ class AtrivonKernel:
     - Execution
     - Progress tracking
     - Persistent memory
+    - Goal restoration
+    - Goal pausing
     - Goal resumption
+    - Continued execution
 
     The Kernel orchestrates the system but does not own
     the specialized logic of these components.
@@ -49,10 +57,13 @@ class AtrivonKernel:
         )
 
         self.current_goal: Goal | None = None
+
         self.current_plan = None
+
         self.current_execution_result: (
             dict[str, Any] | None
         ) = None
+
         self.current_progress: (
             dict[str, Any] | None
         ) = None
@@ -64,9 +75,6 @@ class AtrivonKernel:
     ) -> JsonMemoryRepository:
         """
         Create the default persistent memory repository.
-
-        Runtime memory is stored outside the source tree's
-        tracked code and is excluded from Git through .gitignore.
         """
 
         project_root = (
@@ -92,9 +100,6 @@ class AtrivonKernel:
     ) -> None:
         """
         Persist the current canonical Goal snapshot.
-
-        The MemoryService updates the existing Goal snapshot
-        instead of creating duplicate records.
         """
 
         if self.current_goal is None:
@@ -109,29 +114,32 @@ class AtrivonKernel:
             progress=self.current_progress,
         )
 
+    def _restore_snapshot(
+        self,
+        snapshot: GoalSnapshot,
+    ) -> None:
+        """
+        Restore a GoalSnapshot into the Kernel's active context.
+        """
+
+        self.current_goal = snapshot.goal
+
+        self.current_plan = snapshot.plan
+
+        self.current_execution_result = (
+            snapshot.execution_result
+        )
+
+        self.current_progress = (
+            snapshot.progress
+        )
+
     def process_goal(
         self,
         objective: str,
     ) -> dict[str, Any] | None:
         """
         Process a new user objective through Atrivon's core lifecycle.
-
-        Lifecycle:
-
-        PLANNED
-            ↓
-        APPROVED
-            ↓
-        IN_PROGRESS
-            ↓
-        EXECUTION
-            ↓
-        PROGRESS TRACKING
-            ↓
-        COMPLETED / BLOCKED
-
-        The current Goal snapshot is persisted throughout
-        the lifecycle.
         """
 
         objective = objective.strip()
@@ -145,7 +153,9 @@ class AtrivonKernel:
         )
 
         self.current_plan = None
+
         self.current_execution_result = None
+
         self.current_progress = None
 
         self._persist_current_goal()
@@ -249,9 +259,65 @@ class AtrivonKernel:
             "Beginning execution..."
         )
 
+        return self._execute_current_goal()
+
+    def _execute_current_goal(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Execute or continue execution of the active Goal's Plan.
+
+        The Executor is resume-aware and will skip completed
+        tasks while continuing unfinished work.
+        """
+
+        if self.current_goal is None:
+            raise ValueError(
+                "No active Goal is available for execution."
+            )
+
+        if self.current_plan is None:
+            raise ValueError(
+                "No active Plan is available for execution."
+            )
+
+        if (
+            self.current_goal.state
+            not in {
+                GoalState.IN_PROGRESS,
+                GoalState.PAUSED,
+            }
+        ):
+            raise ValueError(
+                "Goal cannot be executed from its current state: "
+                f"{self.current_goal.state.value}"
+            )
+
+        if (
+            self.current_goal.state
+            == GoalState.PAUSED
+        ):
+            self.current_goal.update_state(
+                GoalState.IN_PROGRESS
+            )
+
+        if (
+            self.current_plan.state
+            == PlanState.PAUSED
+        ):
+            self.current_plan.update_state(
+                PlanState.ACTIVE
+            )
+
+        self._persist_current_goal()
+
+        print(
+            "\nBeginning execution..."
+        )
+
         execution_result = (
             self.executor.execute_plan(
-                plan
+                self.current_plan
             )
         )
 
@@ -261,14 +327,8 @@ class AtrivonKernel:
 
         self.current_progress = (
             self.progress_tracker.calculate_progress(
-                plan
+                self.current_plan
             )
-        )
-
-        self._persist_current_goal()
-
-        self.progress_tracker.display_progress(
-            self.current_progress
         )
 
         execution_status = (
@@ -277,37 +337,43 @@ class AtrivonKernel:
             )
         )
 
-        if execution_status == "completed":
+        if execution_status == (
+            PlanState.COMPLETED.value
+        ):
             self.current_goal.update_state(
                 GoalState.COMPLETED
             )
 
-            self._persist_current_goal()
-
-            print(
-                f"\nGoal state: "
-                f"{self.current_goal.state.value}"
+        elif execution_status == "requires_input":
+            self.current_goal.update_state(
+                GoalState.REQUIRES_INPUT
             )
 
-            print(
-                "Goal completed successfully."
+        elif execution_status == "needs_revision":
+            self.current_goal.update_state(
+                GoalState.NEEDS_REVISION
             )
 
-        else:
+        elif execution_status == "blocked":
             self.current_goal.update_state(
                 GoalState.BLOCKED
             )
 
-            self._persist_current_goal()
-
-            print(
-                f"\nGoal state: "
-                f"{self.current_goal.state.value}"
+        else:
+            self.current_goal.update_state(
+                GoalState.IN_PROGRESS
             )
 
-            print(
-                "Execution could not be completed."
-            )
+        self._persist_current_goal()
+
+        self.progress_tracker.display_progress(
+            self.current_progress
+        )
+
+        print(
+            f"\nGoal state: "
+            f"{self.current_goal.state.value}"
+        )
 
         return {
             "goal": (
@@ -324,22 +390,106 @@ class AtrivonKernel:
             ),
         }
 
+    def pause_goal(
+        self,
+    ) -> GoalSnapshot:
+        """
+        Pause the currently active Goal.
+
+        Only an IN_PROGRESS Goal can be paused.
+
+        Active Plan, Subgoals, and Tasks are moved to PAUSED.
+        Pending and completed Tasks retain their existing states.
+        """
+
+        if self.current_goal is None:
+            raise ValueError(
+                "No active Goal is available to pause."
+            )
+
+        if (
+            self.current_goal.state
+            != GoalState.IN_PROGRESS
+        ):
+            raise ValueError(
+                "Only an IN_PROGRESS Goal can be paused. "
+                f"Current state: "
+                f"{self.current_goal.state.value}"
+            )
+
+        self.current_goal.update_state(
+            GoalState.PAUSED
+        )
+
+        if self.current_plan is not None:
+            if (
+                self.current_plan.state
+                == PlanState.ACTIVE
+            ):
+                self.current_plan.update_state(
+                    PlanState.PAUSED
+                )
+
+            for subgoal in (
+                self.current_plan.subgoals
+            ):
+                if (
+                    subgoal.state
+                    == SubgoalState.IN_PROGRESS
+                ):
+                    subgoal.update_state(
+                        SubgoalState.PAUSED
+                    )
+
+                for task in subgoal.tasks:
+                    if (
+                        task.state
+                        == TaskState.IN_PROGRESS
+                    ):
+                        task.update_state(
+                            TaskState.PAUSED
+                        )
+
+        self._persist_current_goal()
+
+        snapshot_record = (
+            self.memory.get_goal_snapshot(
+                self.current_goal.id
+            )
+        )
+
+        if snapshot_record is None:
+            raise RuntimeError(
+                "Paused Goal could not be reloaded "
+                "from persistent memory."
+            )
+
+        print(
+            "\nGoal paused successfully."
+        )
+
+        print(
+            f"Goal state: "
+            f"{self.current_goal.state.value}"
+        )
+
+        return GoalSnapshot.from_memory_record(
+            snapshot_record
+        )
+
     def resume_goal(
         self,
         goal_id: str,
-    ) -> GoalSnapshot | None:
+    ) -> GoalSnapshot:
         """
-        Restore a persisted Goal into the Kernel's active context.
+        Restore and resume a persisted Goal.
 
-        The restored context includes:
-        - Canonical Goal
-        - Canonical Plan
-        - Execution result
-        - Progress report
+        PAUSED Goals transition back to IN_PROGRESS.
 
-        Returns:
-            A rehydrated GoalSnapshot if found.
-            None if no matching goal exists.
+        BLOCKED, REQUIRES_INPUT, and NEEDS_REVISION Goals
+        are restored but are not automatically resumed.
+
+        COMPLETED Goals cannot be resumed.
         """
 
         goal_id = goal_id.strip()
@@ -356,11 +506,10 @@ class AtrivonKernel:
         )
 
         if memory_record is None:
-            print(
-                f"\nNo persisted goal found "
+            raise ValueError(
+                f"No persisted Goal found "
                 f"for Goal ID: {goal_id}"
             )
-            return None
 
         snapshot = (
             GoalSnapshot.from_memory_record(
@@ -368,57 +517,124 @@ class AtrivonKernel:
             )
         )
 
-        self.current_goal = snapshot.goal
-        self.current_plan = snapshot.plan
-        self.current_execution_result = (
-            snapshot.execution_result
-        )
-        self.current_progress = (
-            snapshot.progress
+        if (
+            snapshot.goal.state
+            == GoalState.COMPLETED
+        ):
+            raise ValueError(
+                "Completed Goals cannot be resumed. "
+                "A completed Goal is a finished outcome."
+            )
+
+        self._restore_snapshot(
+            snapshot
         )
 
-        print(
-            "\nGoal resumed successfully."
-        )
+        if (
+            self.current_goal.state
+            == GoalState.PAUSED
+        ):
+            self.current_goal.update_state(
+                GoalState.IN_PROGRESS
+            )
 
-        print(
-            f"Goal ID: "
-            f"{self.current_goal.id}"
-        )
+            if (
+                self.current_plan is not None
+                and self.current_plan.state
+                == PlanState.PAUSED
+            ):
+                self.current_plan.update_state(
+                    PlanState.ACTIVE
+                )
 
-        print(
-            f"Goal: "
-            f"{self.current_goal.objective}"
-        )
+            if self.current_plan is not None:
+                for subgoal in (
+                    self.current_plan.subgoals
+                ):
+                    if (
+                        subgoal.state
+                        == SubgoalState.PAUSED
+                    ):
+                        subgoal.update_state(
+                            SubgoalState.IN_PROGRESS
+                        )
 
-        print(
-            f"Goal state: "
-            f"{self.current_goal.state.value}"
-        )
+                    for task in subgoal.tasks:
+                        if (
+                            task.state
+                            == TaskState.PAUSED
+                        ):
+                            task.update_state(
+                                TaskState.IN_PROGRESS
+                            )
 
-        if self.current_plan is not None:
+            self._persist_current_goal()
+
             print(
-                f"Plan ID: "
-                f"{self.current_plan.id}"
+                "\nGoal resumed successfully."
+            )
+
+        elif (
+            self.current_goal.state
+            == GoalState.IN_PROGRESS
+        ):
+            print(
+                "\nGoal restored and already "
+                "marked as in progress."
+            )
+
+        else:
+            print(
+                "\nGoal restored but not automatically resumed."
             )
 
             print(
-                f"Plan version: "
-                f"{self.current_plan.version}"
+                f"Current Goal state: "
+                f"{self.current_goal.state.value}"
             )
 
-            print(
-                f"Plan state: "
-                f"{self.current_plan.state.value}"
+        return GoalSnapshot(
+            goal=self.current_goal,
+            plan=self.current_plan,
+            execution_result=(
+                self.current_execution_result
+            ),
+            progress=self.current_progress,
+        )
+
+    def continue_goal(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Continue execution of the currently active Goal.
+
+        The Goal must be IN_PROGRESS.
+
+        Completed tasks are skipped.
+        Unfinished executable tasks continue.
+        """
+
+        if self.current_goal is None:
+            raise ValueError(
+                "No active Goal is available to continue."
             )
 
-        if self.current_progress is not None:
-            print(
-                f"Progress: "
-                f"{self.current_progress.get('progress', 0.0)}%"
+        if self.current_plan is None:
+            raise ValueError(
+                "No active Plan is available to continue."
             )
 
-        return snapshot
+        if (
+            self.current_goal.state
+            != GoalState.IN_PROGRESS
+        ):
+            raise ValueError(
+                "Only an IN_PROGRESS Goal can continue execution. "
+                f"Current state: "
+                f"{self.current_goal.state.value}"
+            )
+
+        return self._execute_current_goal()
 
     def get_current_goal(
         self,
