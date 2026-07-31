@@ -1,10 +1,13 @@
 from typing import Any
 
-from atrivon.domain.models import Plan
+from atrivon.domain.models import Plan, Task
 from atrivon.domain.states import (
     PlanState,
     SubgoalState,
     TaskState,
+)
+from atrivon.execution.dependencies import (
+    DependencyResolver,
 )
 
 
@@ -12,21 +15,19 @@ class Executor:
     """
     The Executor coordinates execution of an approved Atrivon Plan.
 
-    The Executor is resume-aware.
+    The Executor is:
+
+    - Resume-aware
+    - Dependency-aware
+    - State-aware
 
     Completed tasks are never executed again.
 
-    Tasks in these states may continue execution:
-    - pending
-    - in_progress
-    - paused
+    Tasks are only executed when all dependencies are completed.
 
-    Tasks in these states are preserved without automatic execution:
-    - completed
-    - blocked
-    - failed
-    - requires_input
-    - needs_revision
+    The Executor does not decide strategy.
+    It executes the Plan according to the dependency and
+    lifecycle rules defined by Atrivon's execution architecture.
 
     The current task execution itself remains a controlled
     execution framework. Real-world actions will be introduced
@@ -47,7 +48,13 @@ class Executor:
     }
 
     def __init__(self):
-        print("Executor module loaded.")
+        self.dependency_resolver = (
+            DependencyResolver()
+        )
+
+        print(
+            "Executor module loaded."
+        )
 
     def execute_plan(
         self,
@@ -56,84 +63,54 @@ class Executor:
         """
         Execute or continue execution of a canonical Atrivon Plan.
 
-        Completed work is preserved and skipped.
+        The Executor:
 
-        Returns a structured execution result containing:
-        - Plan identity
-        - Goal identity
-        - Plan version
-        - Overall execution status
-        - Subgoal results
-        - Task results
-        - Execution counts
+        1. Validates task dependencies.
+        2. Finds tasks that are ready.
+        3. Executes ready tasks.
+        4. Re-evaluates dependencies.
+        5. Continues until no more executable work remains.
+
+        Completed tasks are preserved and skipped.
+
+        Returns:
+            A structured execution result.
         """
 
-        print("\nStarting plan execution...")
+        print(
+            "\nStarting plan execution..."
+        )
 
         if not isinstance(
             plan,
             Plan,
         ):
-            print(
+            return self._failed_result(
                 "Execution failed: "
                 "expected a Plan object."
             )
 
-            return {
-                "plan_id": None,
-                "goal_id": None,
-                "status": "failed",
-                "subgoals": [],
-                "execution_summary": {
-                    "executed_tasks": 0,
-                    "skipped_tasks": 0,
-                    "total_tasks": 0,
-                },
-            }
-
         if not plan.goal_id.strip():
-            print(
-                "Execution failed: "
-                "plan has no goal ID."
-            )
-
             plan.update_state(
                 PlanState.REJECTED
             )
 
-            return {
-                "plan_id": plan.id,
-                "goal_id": plan.goal_id,
-                "status": "failed",
-                "subgoals": [],
-                "execution_summary": {
-                    "executed_tasks": 0,
-                    "skipped_tasks": 0,
-                    "total_tasks": 0,
-                },
-            }
+            return self._failed_result(
+                "Execution failed: "
+                "plan has no goal ID.",
+                plan=plan,
+            )
 
         if not plan.subgoals:
-            print(
-                "Execution failed: "
-                "plan contains no subgoals."
-            )
-
             plan.update_state(
                 PlanState.REJECTED
             )
 
-            return {
-                "plan_id": plan.id,
-                "goal_id": plan.goal_id,
-                "status": "failed",
-                "subgoals": [],
-                "execution_summary": {
-                    "executed_tasks": 0,
-                    "skipped_tasks": 0,
-                    "total_tasks": 0,
-                },
-            }
+            return self._failed_result(
+                "Execution failed: "
+                "plan contains no subgoals.",
+                plan=plan,
+            )
 
         if (
             plan.state
@@ -143,15 +120,51 @@ class Executor:
                 "Cannot execute a completed Plan."
             )
 
+        dependency_validation = (
+            self.dependency_resolver.validate_plan(
+                plan
+            )
+        )
+
+        if not dependency_validation.valid:
+            plan.update_state(
+                PlanState.REJECTED
+            )
+
+            print(
+                "\nDependency validation failed."
+            )
+
+            for error in (
+                dependency_validation.errors
+            ):
+                print(
+                    f"- {error}"
+                )
+
+            return {
+                "plan_id": plan.id,
+                "goal_id": plan.goal_id,
+                "plan_version": plan.version,
+                "status": "failed",
+                "subgoals": [],
+                "execution_summary": {
+                    "executed_tasks": 0,
+                    "skipped_tasks": 0,
+                    "dependency_blocked_tasks": 0,
+                    "total_tasks": self._count_tasks(
+                        plan
+                    ),
+                    "execution_passes": 0,
+                },
+                "dependency_errors": list(
+                    dependency_validation.errors
+                ),
+            }
+
         plan.update_state(
             PlanState.ACTIVE
         )
-
-        execution_results = []
-
-        executed_tasks = 0
-        skipped_tasks = 0
-        total_tasks = 0
 
         print(
             f"\nExecuting Plan: "
@@ -168,49 +181,155 @@ class Executor:
             f"{plan.goal_id}"
         )
 
-        for subgoal_number, subgoal in enumerate(
-            plan.subgoals,
-            start=1,
-        ):
-            print(
-                f"\nExecuting subgoal "
-                f"{subgoal_number}: "
-                f"{subgoal.name}"
+        task_results: dict[
+            str,
+            dict[str, Any],
+        ] = {}
+
+        executed_tasks = 0
+        skipped_tasks = 0
+        execution_passes = 0
+
+        all_tasks = self._collect_tasks(
+            plan
+        )
+
+        total_tasks = len(
+            all_tasks
+        )
+
+        for task in all_tasks:
+            if (
+                task.state
+                == TaskState.COMPLETED
+            ):
+                task_results[
+                    task.id
+                ] = {
+                    "task_id": task.id,
+                    "task": task.title,
+                    "state": task.state.value,
+                    "result": task.result,
+                    "executed": False,
+                    "skipped": True,
+                    "skip_reason": (
+                        "Task was already completed."
+                    ),
+                }
+
+                skipped_tasks += 1
+
+        while True:
+            ready_tasks = (
+                self.dependency_resolver.get_ready_tasks(
+                    plan
+                )
             )
 
-            subgoal_task_results = []
+            executable_tasks = [
+                task
+                for task in ready_tasks
+                if task.state
+                in self.EXECUTABLE_TASK_STATES
+            ]
 
-            for task_number, task in enumerate(
-                subgoal.tasks,
-                start=1,
-            ):
-                total_tasks += 1
+            if not executable_tasks:
+                break
 
-                task_result = (
-                    self._process_task(
-                        task=task,
-                        task_number=task_number,
-                        subgoal_number=subgoal_number,
-                    )
+            execution_passes += 1
+
+            print(
+                f"\nExecution pass "
+                f"{execution_passes}"
+            )
+
+            progress_made = False
+
+            for task in executable_tasks:
+                result = self._execute_task(
+                    task
                 )
 
-                subgoal_task_results.append(
-                    task_result
-                )
+                task_results[
+                    task.id
+                ] = result
 
-                if task_result.get(
+                if result.get(
                     "executed"
                 ):
                     executed_tasks += 1
+                    progress_made = True
 
-                if task_result.get(
-                    "skipped"
-                ):
-                    skipped_tasks += 1
+            if not progress_made:
+                break
+
+        dependency_blocked_tasks = (
+            self.dependency_resolver.get_blocked_tasks(
+                plan
+            )
+        )
+
+        for task in dependency_blocked_tasks:
+            unsatisfied_dependencies = (
+                self.dependency_resolver
+                .get_unsatisfied_dependencies(
+                    task,
+                    plan,
+                )
+            )
+
+            task_results[
+                task.id
+            ] = {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": False,
+                "skipped": True,
+                "skip_reason": (
+                    "Task is waiting for "
+                    "incomplete dependencies."
+                ),
+                "unsatisfied_dependencies": (
+                    unsatisfied_dependencies
+                ),
+            }
+
+        dependency_blocked_ids = {
+            task.id
+            for task
+            in dependency_blocked_tasks
+        }
+
+        subgoal_results = []
+
+        for subgoal in plan.subgoals:
+            task_results_for_subgoal = []
+
+            for task in subgoal.tasks:
+                result = task_results.get(
+                    task.id
+                )
+
+                if result is None:
+                    result = {
+                        "task_id": task.id,
+                        "task": task.title,
+                        "state": task.state.value,
+                        "result": task.result,
+                        "executed": False,
+                        "skipped": False,
+                    }
+
+                task_results_for_subgoal.append(
+                    result
+                )
 
             subgoal_status = (
                 self._determine_subgoal_status(
-                    subgoal_task_results
+                    subgoal,
+                    dependency_blocked_ids,
                 )
             )
 
@@ -221,27 +340,35 @@ class Executor:
             )
 
             print(
+                f"\nSubgoal: "
+                f"{subgoal.name}"
+            )
+
+            print(
                 f"Subgoal status: "
                 f"{subgoal_status}"
             )
 
-            execution_results.append(
+            subgoal_results.append(
                 {
                     "subgoal_id": subgoal.id,
                     "subgoal": subgoal.name,
                     "status": subgoal_status,
-                    "tasks": subgoal_task_results,
+                    "tasks": (
+                        task_results_for_subgoal
+                    ),
                 }
             )
 
         overall_status = (
             self._determine_plan_status(
-                execution_results
+                subgoal_results
             )
         )
 
-        if overall_status == (
-            PlanState.COMPLETED.value
+        if (
+            overall_status
+            == PlanState.COMPLETED.value
         ):
             plan.update_state(
                 PlanState.COMPLETED
@@ -249,6 +376,42 @@ class Executor:
 
             print(
                 "\nPlan execution completed."
+            )
+
+        elif (
+            overall_status
+            == PlanState.BLOCKED.value
+        ):
+            plan.update_state(
+                PlanState.BLOCKED
+            )
+
+            print(
+                "\nPlan execution blocked."
+            )
+
+        elif (
+            overall_status
+            == "requires_input"
+        ):
+            plan.update_state(
+                PlanState.ACTIVE
+            )
+
+            print(
+                "\nPlan execution requires user input."
+            )
+
+        elif (
+            overall_status
+            == "needs_revision"
+        ):
+            plan.update_state(
+                PlanState.NEEDS_REVISION
+            )
+
+            print(
+                "\nPlan requires revision."
             )
 
         else:
@@ -266,42 +429,40 @@ class Executor:
             "goal_id": plan.goal_id,
             "plan_version": plan.version,
             "status": overall_status,
-            "subgoals": execution_results,
+            "subgoals": subgoal_results,
             "execution_summary": {
                 "executed_tasks": executed_tasks,
                 "skipped_tasks": skipped_tasks,
+                "dependency_blocked_tasks": len(
+                    dependency_blocked_tasks
+                ),
                 "total_tasks": total_tasks,
+                "execution_passes": execution_passes,
             },
         }
 
-    def _process_task(
+    def _execute_task(
         self,
-        task,
-        task_number: int,
-        subgoal_number: int,
+        task: Task,
     ) -> dict[str, Any]:
         """
-        Process one task according to its current lifecycle state.
+        Execute one dependency-ready Task.
 
         Completed tasks are skipped.
 
         Pending, in-progress, and paused tasks continue execution.
 
-        Blocked, failed, requires-input, and needs-revision tasks
-        are preserved without automatic execution.
+        Tasks in blocked, failed, requires-input, or needs-revision
+        states are not executed automatically.
         """
 
         print(
-            f"  Task "
-            f"{subgoal_number}."
-            f"{task_number}: "
+            f"  Task: "
             f"{task.title}"
         )
 
-        current_state = task.state
-
         if (
-            current_state
+            task.state
             == TaskState.COMPLETED
         ):
             print(
@@ -325,11 +486,11 @@ class Executor:
             }
 
         if (
-            current_state
+            task.state
             in self.NON_EXECUTABLE_TASK_STATES
         ):
             print(
-                f"  Task cannot continue automatically."
+                "  Task cannot continue automatically."
             )
 
             print(
@@ -351,12 +512,12 @@ class Executor:
             }
 
         if (
-            current_state
+            task.state
             not in self.EXECUTABLE_TASK_STATES
         ):
             raise ValueError(
                 f"Unsupported task state: "
-                f"{current_state.value}"
+                f"{task.state.value}"
             )
 
         print(
@@ -402,54 +563,77 @@ class Executor:
 
     def _determine_subgoal_status(
         self,
-        task_results: list[dict[str, Any]],
+        subgoal,
+        dependency_blocked_ids: set[str],
     ) -> str:
         """
-        Determine the correct SubgoalState from task results.
+        Determine the correct SubgoalState from task states
+        and dependency readiness.
         """
 
-        if not task_results:
+        if not subgoal.tasks:
             return SubgoalState.BLOCKED.value
 
         task_states = {
-            result["state"]
-            for result in task_results
+            task.state
+            for task in subgoal.tasks
         }
 
         if task_states == {
-            TaskState.COMPLETED.value
+            TaskState.COMPLETED
         }:
-            return SubgoalState.COMPLETED.value
+            return (
+                SubgoalState.COMPLETED.value
+            )
 
-        if (
-            TaskState.REQUIRES_INPUT.value
-            in task_states
+        if any(
+            task.state
+            == TaskState.REQUIRES_INPUT
+            for task in subgoal.tasks
         ):
             return (
                 SubgoalState.REQUIRES_INPUT.value
             )
 
-        if (
-            TaskState.NEEDS_REVISION.value
-            in task_states
+        if any(
+            task.state
+            == TaskState.NEEDS_REVISION
+            for task in subgoal.tasks
         ):
             return (
                 SubgoalState.NEEDS_REVISION.value
             )
 
-        if (
-            TaskState.BLOCKED.value
-            in task_states
-            or TaskState.FAILED.value
-            in task_states
+        if any(
+            task.state
+            in {
+                TaskState.BLOCKED,
+                TaskState.FAILED,
+            }
+            for task in subgoal.tasks
         ):
-            return SubgoalState.BLOCKED.value
+            return (
+                SubgoalState.BLOCKED.value
+            )
 
-        return SubgoalState.IN_PROGRESS.value
+        if any(
+            task.id
+            in dependency_blocked_ids
+            for task in subgoal.tasks
+        ):
+            return (
+                SubgoalState.BLOCKED.value
+            )
+
+        return (
+            SubgoalState.IN_PROGRESS.value
+        )
 
     def _determine_plan_status(
         self,
-        subgoal_results: list[dict[str, Any]],
+        subgoal_results: list[
+            dict[str, Any]
+        ],
     ) -> str:
         """
         Determine the overall execution status of the Plan.
@@ -466,7 +650,9 @@ class Executor:
         if subgoal_states == {
             SubgoalState.COMPLETED.value
         }:
-            return PlanState.COMPLETED.value
+            return (
+                PlanState.COMPLETED.value
+            )
 
         if (
             SubgoalState.REQUIRES_INPUT.value
@@ -484,6 +670,71 @@ class Executor:
             SubgoalState.BLOCKED.value
             in subgoal_states
         ):
-            return "blocked"
+            return (
+                PlanState.BLOCKED.value
+            )
 
         return "in_progress"
+
+    def _collect_tasks(
+        self,
+        plan: Plan,
+    ) -> list[Task]:
+        """
+        Collect all Tasks from a Plan.
+        """
+
+        return [
+            task
+            for subgoal in plan.subgoals
+            for task in subgoal.tasks
+        ]
+
+    def _count_tasks(
+        self,
+        plan: Plan,
+    ) -> int:
+        """
+        Count all Tasks in a Plan.
+        """
+
+        return sum(
+            len(subgoal.tasks)
+            for subgoal in plan.subgoals
+        )
+
+    def _failed_result(
+        self,
+        message: str,
+        plan: Plan | None = None,
+    ) -> dict[str, Any]:
+        """
+        Build a standardized failed execution result.
+        """
+
+        return {
+            "plan_id": (
+                plan.id
+                if plan is not None
+                else None
+            ),
+            "goal_id": (
+                plan.goal_id
+                if plan is not None
+                else None
+            ),
+            "status": "failed",
+            "subgoals": [],
+            "message": message,
+            "execution_summary": {
+                "executed_tasks": 0,
+                "skipped_tasks": 0,
+                "dependency_blocked_tasks": 0,
+                "total_tasks": (
+                    self._count_tasks(plan)
+                    if plan is not None
+                    else 0
+                ),
+                "execution_passes": 0,
+            },
+        }

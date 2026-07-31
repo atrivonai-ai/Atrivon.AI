@@ -27,6 +27,7 @@ class PlanState(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     COMPLETED = "completed"
+    BLOCKED = "blocked"
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
     NEEDS_REVISION = "needs_revision"
