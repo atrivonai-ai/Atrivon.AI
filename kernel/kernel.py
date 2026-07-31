@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 
+from atrivon.domain.memory import GoalSnapshot
 from atrivon.domain.models import Goal
 from atrivon.domain.states import GoalState
 from atrivon.memory.json_repository import (
@@ -27,6 +28,7 @@ class AtrivonKernel:
     - Execution
     - Progress tracking
     - Persistent memory
+    - Goal resumption
 
     The Kernel orchestrates the system but does not own
     the specialized logic of these components.
@@ -112,7 +114,7 @@ class AtrivonKernel:
         objective: str,
     ) -> dict[str, Any] | None:
         """
-        Process a user objective through Atrivon's core lifecycle.
+        Process a new user objective through Atrivon's core lifecycle.
 
         Lifecycle:
 
@@ -322,6 +324,102 @@ class AtrivonKernel:
             ),
         }
 
+    def resume_goal(
+        self,
+        goal_id: str,
+    ) -> GoalSnapshot | None:
+        """
+        Restore a persisted Goal into the Kernel's active context.
+
+        The restored context includes:
+        - Canonical Goal
+        - Canonical Plan
+        - Execution result
+        - Progress report
+
+        Returns:
+            A rehydrated GoalSnapshot if found.
+            None if no matching goal exists.
+        """
+
+        goal_id = goal_id.strip()
+
+        if not goal_id:
+            raise ValueError(
+                "Goal ID is required to resume a goal."
+            )
+
+        memory_record = (
+            self.memory.get_goal_snapshot(
+                goal_id
+            )
+        )
+
+        if memory_record is None:
+            print(
+                f"\nNo persisted goal found "
+                f"for Goal ID: {goal_id}"
+            )
+            return None
+
+        snapshot = (
+            GoalSnapshot.from_memory_record(
+                memory_record
+            )
+        )
+
+        self.current_goal = snapshot.goal
+        self.current_plan = snapshot.plan
+        self.current_execution_result = (
+            snapshot.execution_result
+        )
+        self.current_progress = (
+            snapshot.progress
+        )
+
+        print(
+            "\nGoal resumed successfully."
+        )
+
+        print(
+            f"Goal ID: "
+            f"{self.current_goal.id}"
+        )
+
+        print(
+            f"Goal: "
+            f"{self.current_goal.objective}"
+        )
+
+        print(
+            f"Goal state: "
+            f"{self.current_goal.state.value}"
+        )
+
+        if self.current_plan is not None:
+            print(
+                f"Plan ID: "
+                f"{self.current_plan.id}"
+            )
+
+            print(
+                f"Plan version: "
+                f"{self.current_plan.version}"
+            )
+
+            print(
+                f"Plan state: "
+                f"{self.current_plan.state.value}"
+            )
+
+        if self.current_progress is not None:
+            print(
+                f"Progress: "
+                f"{self.current_progress.get('progress', 0.0)}%"
+            )
+
+        return snapshot
+
     def get_current_goal(
         self,
     ) -> Goal | None:
@@ -373,11 +471,28 @@ class AtrivonKernel:
     def get_persisted_goal(
         self,
         goal_id: str,
-    ):
+    ) -> GoalSnapshot | None:
         """
-        Retrieve a persisted Goal snapshot by Goal ID.
+        Retrieve and rehydrate a persisted Goal snapshot
+        without making it the active Kernel context.
         """
 
-        return self.memory.get_goal_snapshot(
-            goal_id
+        goal_id = goal_id.strip()
+
+        if not goal_id:
+            raise ValueError(
+                "Goal ID is required."
+            )
+
+        memory_record = (
+            self.memory.get_goal_snapshot(
+                goal_id
+            )
+        )
+
+        if memory_record is None:
+            return None
+
+        return GoalSnapshot.from_memory_record(
+            memory_record
         )

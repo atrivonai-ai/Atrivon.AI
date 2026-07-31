@@ -2,7 +2,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from atrivon.domain.models import generate_id
+from atrivon.domain.models import (
+    Goal,
+    Plan,
+    generate_id,
+)
 
 
 def utc_now() -> datetime:
@@ -17,13 +21,6 @@ def utc_now() -> datetime:
 class MemoryRecord:
     """
     Canonical Atrivon memory record.
-
-    A MemoryRecord represents a persistent piece of information
-    that Atrivon wants to retain.
-
-    The record is intentionally storage-independent.
-    Repositories and databases store these records, but they
-    do not define the meaning of the memory itself.
     """
 
     memory_type: str
@@ -98,3 +95,90 @@ class MemoryRecord:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+
+@dataclass
+class GoalSnapshot:
+    """
+    Rehydrated persistent context for an Atrivon Goal.
+
+    A GoalSnapshot reconstructs the canonical Goal and Plan
+    objects required to restore active working context.
+    """
+
+    goal: Goal
+
+    plan: Plan | None = None
+
+    execution_result: dict[str, Any] | None = None
+
+    progress: dict[str, Any] | None = None
+
+    @classmethod
+    def from_memory_record(
+        cls,
+        record: MemoryRecord,
+    ) -> "GoalSnapshot":
+        """
+        Reconstruct a GoalSnapshot from a persistent
+        goal_snapshot MemoryRecord.
+        """
+
+        if record.memory_type != "goal_snapshot":
+            raise ValueError(
+                "MemoryRecord is not a goal_snapshot."
+            )
+
+        content = record.content
+
+        goal_data = content.get(
+            "goal"
+        )
+
+        if not isinstance(
+            goal_data,
+            dict,
+        ):
+            raise ValueError(
+                "Goal snapshot is missing valid Goal data."
+            )
+
+        goal = Goal.from_dict(
+            goal_data
+        )
+
+        plan_data = content.get(
+            "plan"
+        )
+
+        plan = None
+
+        if plan_data is not None:
+            if not isinstance(
+                plan_data,
+                dict,
+            ):
+                raise ValueError(
+                    "Goal snapshot contains invalid Plan data."
+                )
+
+            plan = Plan.from_dict(
+                plan_data
+            )
+
+            if plan.goal_id != goal.id:
+                raise ValueError(
+                    "Persisted Plan does not belong "
+                    "to the persisted Goal."
+                )
+
+        return cls(
+            goal=goal,
+            plan=plan,
+            execution_result=content.get(
+                "execution_result"
+            ),
+            progress=content.get(
+                "progress"
+            ),
+        )

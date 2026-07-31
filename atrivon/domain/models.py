@@ -27,24 +27,60 @@ def generate_id() -> str:
     return str(uuid4())
 
 
+def parse_datetime(
+    value: str | datetime,
+) -> datetime:
+    """
+    Convert a datetime or ISO-formatted string into a datetime.
+    """
+
+    if isinstance(
+        value,
+        datetime,
+    ):
+        return value
+
+    if not isinstance(
+        value,
+        str,
+    ):
+        raise TypeError(
+            "Timestamp must be a datetime or ISO-formatted string."
+        )
+
+    return datetime.fromisoformat(
+        value.replace(
+            "Z",
+            "+00:00",
+        )
+    )
+
+
 @dataclass
 class Task:
     """
     Canonical Atrivon task domain model.
-
-    A Task represents one unit of work required to advance
-    a Subgoal.
     """
 
     title: str
     description: str = ""
-    id: str = field(default_factory=generate_id)
+    id: str = field(
+        default_factory=generate_id
+    )
     state: TaskState = TaskState.PENDING
-    dependencies: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(
+        default_factory=list
+    )
     result: Any = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utc_now)
-    updated_at: datetime = field(default_factory=utc_now)
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+    created_at: datetime = field(
+        default_factory=utc_now
+    )
+    updated_at: datetime = field(
+        default_factory=utc_now
+    )
 
     def __post_init__(self):
         if not self.title.strip():
@@ -90,7 +126,7 @@ class Task:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the task into a serialization-friendly dictionary.
+        Convert the Task into a serializable dictionary.
         """
 
         data = asdict(self)
@@ -105,25 +141,87 @@ class Task:
 
         return data
 
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> "Task":
+        """
+        Reconstruct a Task from serialized data.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise TypeError(
+                "Task data must be a dictionary."
+            )
+
+        return cls(
+            title=data["title"],
+            description=data.get(
+                "description",
+                "",
+            ),
+            id=data["id"],
+            state=TaskState(
+                data.get(
+                    "state",
+                    TaskState.PENDING.value,
+                )
+            ),
+            dependencies=list(
+                data.get(
+                    "dependencies",
+                    [],
+                )
+            ),
+            result=data.get(
+                "result"
+            ),
+            metadata=dict(
+                data.get(
+                    "metadata",
+                    {},
+                )
+            ),
+            created_at=parse_datetime(
+                data["created_at"]
+            ),
+            updated_at=parse_datetime(
+                data["updated_at"]
+            ),
+        )
+
 
 @dataclass
 class Subgoal:
     """
     Canonical Atrivon subgoal domain model.
-
-    A Subgoal represents a meaningful objective that contributes
-    to the completion of a larger Plan.
     """
 
     name: str
     description: str = ""
-    id: str = field(default_factory=generate_id)
+    id: str = field(
+        default_factory=generate_id
+    )
     state: SubgoalState = SubgoalState.PENDING
-    tasks: list[Task] = field(default_factory=list)
-    dependencies: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utc_now)
-    updated_at: datetime = field(default_factory=utc_now)
+    tasks: list[Task] = field(
+        default_factory=list
+    )
+    dependencies: list[str] = field(
+        default_factory=list
+    )
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+    created_at: datetime = field(
+        default_factory=utc_now
+    )
+    updated_at: datetime = field(
+        default_factory=utc_now
+    )
 
     def __post_init__(self):
         if not self.name.strip():
@@ -155,7 +253,9 @@ class Subgoal:
                 "Subgoal tasks must be Task objects."
             )
 
-        self.tasks.append(task)
+        self.tasks.append(
+            task
+        )
         self.updated_at = utc_now()
 
     def update_state(
@@ -177,8 +277,7 @@ class Subgoal:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the subgoal and its tasks into a
-        serialization-friendly dictionary.
+        Convert the Subgoal into a serializable dictionary.
         """
 
         return {
@@ -196,28 +295,99 @@ class Subgoal:
             ],
         }
 
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> "Subgoal":
+        """
+        Reconstruct a Subgoal and its Tasks.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise TypeError(
+                "Subgoal data must be a dictionary."
+            )
+
+        tasks = [
+            Task.from_dict(
+                task_data
+            )
+            for task_data in data.get(
+                "tasks",
+                [],
+            )
+        ]
+
+        return cls(
+            name=data["name"],
+            description=data.get(
+                "description",
+                "",
+            ),
+            id=data["id"],
+            state=SubgoalState(
+                data.get(
+                    "state",
+                    SubgoalState.PENDING.value,
+                )
+            ),
+            tasks=tasks,
+            dependencies=list(
+                data.get(
+                    "dependencies",
+                    [],
+                )
+            ),
+            metadata=dict(
+                data.get(
+                    "metadata",
+                    {},
+                )
+            ),
+            created_at=parse_datetime(
+                data["created_at"]
+            ),
+            updated_at=parse_datetime(
+                data["updated_at"]
+            ),
+        )
+
 
 @dataclass
 class Plan:
     """
     Canonical Atrivon plan domain model.
 
-    A Plan represents a strategy for achieving a Goal.
-
     Plans are versioned so Atrivon can revise a strategy
-    without destroying the history of previous plans.
+    without destroying previous plan history.
     """
 
     goal_id: str
     version: int = 1
-    id: str = field(default_factory=generate_id)
+    id: str = field(
+        default_factory=generate_id
+    )
     state: PlanState = PlanState.DRAFT
-    subgoals: list[Subgoal] = field(default_factory=list)
+    subgoals: list[Subgoal] = field(
+        default_factory=list
+    )
     rationale: str = ""
-    dependencies: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utc_now)
-    updated_at: datetime = field(default_factory=utc_now)
+    dependencies: list[str] = field(
+        default_factory=list
+    )
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+    created_at: datetime = field(
+        default_factory=utc_now
+    )
+    updated_at: datetime = field(
+        default_factory=utc_now
+    )
 
     def __post_init__(self):
         if not self.goal_id.strip():
@@ -254,7 +424,9 @@ class Plan:
                 "Plan subgoals must be Subgoal objects."
             )
 
-        self.subgoals.append(subgoal)
+        self.subgoals.append(
+            subgoal
+        )
         self.updated_at = utc_now()
 
     def update_state(
@@ -276,8 +448,7 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the plan and its subgoals into a
-        serialization-friendly dictionary.
+        Convert the Plan into a serializable dictionary.
         """
 
         return {
@@ -296,6 +467,73 @@ class Plan:
             ],
         }
 
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> "Plan":
+        """
+        Reconstruct a Plan with its Subgoals and Tasks.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise TypeError(
+                "Plan data must be a dictionary."
+            )
+
+        subgoals = [
+            Subgoal.from_dict(
+                subgoal_data
+            )
+            for subgoal_data in data.get(
+                "subgoals",
+                [],
+            )
+        ]
+
+        return cls(
+            goal_id=data["goal_id"],
+            version=int(
+                data.get(
+                    "version",
+                    1,
+                )
+            ),
+            id=data["id"],
+            state=PlanState(
+                data.get(
+                    "state",
+                    PlanState.DRAFT.value,
+                )
+            ),
+            subgoals=subgoals,
+            rationale=data.get(
+                "rationale",
+                "",
+            ),
+            dependencies=list(
+                data.get(
+                    "dependencies",
+                    [],
+                )
+            ),
+            metadata=dict(
+                data.get(
+                    "metadata",
+                    {},
+                )
+            ),
+            created_at=parse_datetime(
+                data["created_at"]
+            ),
+            updated_at=parse_datetime(
+                data["updated_at"]
+            ),
+        )
+
 
 @dataclass
 class Goal:
@@ -303,21 +541,27 @@ class Goal:
     Canonical Atrivon goal domain model.
 
     A Goal is the primary unit of work in Atrivon.
-
-    A goal may have multiple plans over its lifetime.
-    The active_plan_id identifies the plan currently guiding
-    execution.
     """
 
     objective: str
     context: str = ""
-    id: str = field(default_factory=generate_id)
+    id: str = field(
+        default_factory=generate_id
+    )
     state: GoalState = GoalState.PLANNED
-    plan_ids: list[str] = field(default_factory=list)
+    plan_ids: list[str] = field(
+        default_factory=list
+    )
     active_plan_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utc_now)
-    updated_at: datetime = field(default_factory=utc_now)
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+    created_at: datetime = field(
+        default_factory=utc_now
+    )
+    updated_at: datetime = field(
+        default_factory=utc_now
+    )
 
     def __post_init__(self):
         if not self.objective.strip():
@@ -381,7 +625,7 @@ class Goal:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Convert the Goal into a serialization-friendly dictionary.
+        Convert the Goal into a serializable dictionary.
         """
 
         return {
@@ -395,3 +639,56 @@ class Goal:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> "Goal":
+        """
+        Reconstruct a Goal from serialized data.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise TypeError(
+                "Goal data must be a dictionary."
+            )
+
+        return cls(
+            objective=data["objective"],
+            context=data.get(
+                "context",
+                "",
+            ),
+            id=data["id"],
+            state=GoalState(
+                data.get(
+                    "state",
+                    GoalState.PLANNED.value,
+                )
+            ),
+            plan_ids=list(
+                data.get(
+                    "plan_ids",
+                    [],
+                )
+            ),
+            active_plan_id=data.get(
+                "active_plan_id"
+            ),
+            metadata=dict(
+                data.get(
+                    "metadata",
+                    {},
+                )
+            ),
+            created_at=parse_datetime(
+                data["created_at"]
+            ),
+            updated_at=parse_datetime(
+                data["updated_at"]
+            ),
+        )
