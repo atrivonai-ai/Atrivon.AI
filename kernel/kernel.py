@@ -1,7 +1,12 @@
+from pathlib import Path
 from typing import Any
 
 from atrivon.domain.models import Goal
 from atrivon.domain.states import GoalState
+from atrivon.memory.json_repository import (
+    JsonMemoryRepository,
+)
+from atrivon.memory.service import MemoryService
 
 from kernel.executor import Executor
 from kernel.planner import Planner
@@ -21,6 +26,7 @@ class AtrivonKernel:
     - Reasoning
     - Execution
     - Progress tracking
+    - Persistent memory
 
     The Kernel orchestrates the system but does not own
     the specialized logic of these components.
@@ -32,12 +38,74 @@ class AtrivonKernel:
         self.executor = Executor()
         self.progress_tracker = ProgressTracker()
 
+        self.memory_repository = (
+            self._create_memory_repository()
+        )
+
+        self.memory = MemoryService(
+            self.memory_repository
+        )
+
         self.current_goal: Goal | None = None
         self.current_plan = None
-        self.current_execution_result: dict[str, Any] | None = None
-        self.current_progress: dict[str, Any] | None = None
+        self.current_execution_result: (
+            dict[str, Any] | None
+        ) = None
+        self.current_progress: (
+            dict[str, Any] | None
+        ) = None
 
         print("Atrivon Kernel initialized.")
+
+    def _create_memory_repository(
+        self,
+    ) -> JsonMemoryRepository:
+        """
+        Create the default persistent memory repository.
+
+        Runtime memory is stored outside the source tree's
+        tracked code and is excluded from Git through .gitignore.
+        """
+
+        project_root = (
+            Path(__file__).resolve().parent.parent
+        )
+
+        memory_directory = (
+            project_root
+            / ".atrivon"
+        )
+
+        memory_file = (
+            memory_directory
+            / "memory.json"
+        )
+
+        return JsonMemoryRepository(
+            memory_file
+        )
+
+    def _persist_current_goal(
+        self,
+    ) -> None:
+        """
+        Persist the current canonical Goal snapshot.
+
+        The MemoryService updates the existing Goal snapshot
+        instead of creating duplicate records.
+        """
+
+        if self.current_goal is None:
+            return
+
+        self.memory.save_goal_snapshot(
+            goal=self.current_goal,
+            plan=self.current_plan,
+            execution_result=(
+                self.current_execution_result
+            ),
+            progress=self.current_progress,
+        )
 
     def process_goal(
         self,
@@ -59,6 +127,9 @@ class AtrivonKernel:
         PROGRESS TRACKING
             ↓
         COMPLETED / BLOCKED
+
+        The current Goal snapshot is persisted throughout
+        the lifecycle.
         """
 
         objective = objective.strip()
@@ -74,6 +145,8 @@ class AtrivonKernel:
         self.current_plan = None
         self.current_execution_result = None
         self.current_progress = None
+
+        self._persist_current_goal()
 
         print(
             f"\nGoal received: "
@@ -94,23 +167,22 @@ class AtrivonKernel:
             "Understanding the goal..."
         )
 
-        # Create the canonical Plan.
         plan = self.planner.create_plan(
             self.current_goal
         )
 
         self.current_plan = plan
 
-        # Link the Plan to the Goal.
         self.current_goal.add_plan(
             plan
         )
+
+        self._persist_current_goal()
 
         print(
             "\nPlan received by the Kernel."
         )
 
-        # Evaluate the Plan.
         plan_approved = (
             self.reasoner.evaluate_plan(
                 plan
@@ -121,6 +193,8 @@ class AtrivonKernel:
             self.current_goal.update_state(
                 GoalState.NEEDS_REVISION
             )
+
+            self._persist_current_goal()
 
             print(
                 f"Goal state: "
@@ -133,15 +207,21 @@ class AtrivonKernel:
             )
 
             return {
-                "goal_id": self.current_goal.id,
-                "plan_id": plan.id,
-                "status": "needs_revision",
+                "goal": (
+                    self.current_goal.to_dict()
+                ),
+                "plan": (
+                    self.current_plan.to_dict()
+                ),
+                "execution_result": None,
+                "progress": None,
             }
 
-        # Plan approved.
         self.current_goal.update_state(
             GoalState.APPROVED
         )
+
+        self._persist_current_goal()
 
         print(
             f"Goal state: "
@@ -152,10 +232,11 @@ class AtrivonKernel:
             "Plan approved."
         )
 
-        # Begin execution.
         self.current_goal.update_state(
             GoalState.IN_PROGRESS
         )
+
+        self._persist_current_goal()
 
         print(
             f"Goal state: "
@@ -176,13 +257,13 @@ class AtrivonKernel:
             execution_result
         )
 
-        # Calculate progress directly from
-        # the canonical Plan and its Task states.
         self.current_progress = (
             self.progress_tracker.calculate_progress(
                 plan
             )
         )
+
+        self._persist_current_goal()
 
         self.progress_tracker.display_progress(
             self.current_progress
@@ -199,6 +280,8 @@ class AtrivonKernel:
                 GoalState.COMPLETED
             )
 
+            self._persist_current_goal()
+
             print(
                 f"\nGoal state: "
                 f"{self.current_goal.state.value}"
@@ -213,6 +296,8 @@ class AtrivonKernel:
                 GoalState.BLOCKED
             )
 
+            self._persist_current_goal()
+
             print(
                 f"\nGoal state: "
                 f"{self.current_goal.state.value}"
@@ -223,8 +308,12 @@ class AtrivonKernel:
             )
 
         return {
-            "goal": self.current_goal.to_dict(),
-            "plan": self.current_plan.to_dict(),
+            "goal": (
+                self.current_goal.to_dict()
+            ),
+            "plan": (
+                self.current_plan.to_dict()
+            ),
             "execution_result": (
                 self.current_execution_result
             ),
@@ -242,7 +331,9 @@ class AtrivonKernel:
 
         return self.current_goal
 
-    def get_current_plan(self):
+    def get_current_plan(
+        self,
+    ):
         """
         Return the current canonical Plan object.
         """
@@ -278,3 +369,15 @@ class AtrivonKernel:
             return None
 
         return self.current_goal.state.value
+
+    def get_persisted_goal(
+        self,
+        goal_id: str,
+    ):
+        """
+        Retrieve a persisted Goal snapshot by Goal ID.
+        """
+
+        return self.memory.get_goal_snapshot(
+            goal_id
+        )
