@@ -24,6 +24,17 @@ class PlanRevisionResult:
     reason: str
 
 
+@dataclass(frozen=True)
+class AdaptiveReplanningResult:
+    """
+    Result of an adaptive replanning operation.
+    """
+
+    analysis: dict[str, Any]
+    revision: PlanRevisionResult
+    revised_plan: Plan
+
+
 class PlanRevisionService:
     """
     Manages safe Plan revision and succession.
@@ -216,3 +227,162 @@ class PlanRevisionService:
             ),
             "state": plan.state.value,
         }
+
+
+class AdaptiveReplanner:
+    """
+    Coordinates the first adaptive replanning loop.
+
+    The workflow is:
+
+    Execution Result
+        ↓
+    Reasoner analyzes the problem
+        ↓
+    Planner creates a revised strategy
+        ↓
+    Reasoner validates the revised strategy
+        ↓
+    PlanRevisionService activates the new Plan
+    """
+
+    def __init__(
+        self,
+        planner,
+        reasoner,
+        revision_service: PlanRevisionService | None = None,
+    ):
+        if not hasattr(
+            planner,
+            "create_revised_plan",
+        ):
+            raise TypeError(
+                "planner must provide "
+                "create_revised_plan()."
+            )
+
+        if not hasattr(
+            reasoner,
+            "analyze_execution_result",
+        ):
+            raise TypeError(
+                "reasoner must provide "
+                "analyze_execution_result()."
+            )
+
+        if not hasattr(
+            reasoner,
+            "evaluate_plan",
+        ):
+            raise TypeError(
+                "reasoner must provide "
+                "evaluate_plan()."
+            )
+
+        self.planner = planner
+
+        self.reasoner = reasoner
+
+        self.revision_service = (
+            revision_service
+            or PlanRevisionService()
+        )
+
+    def can_replan(
+        self,
+        goal: Goal,
+        current_plan: Plan,
+        execution_result: dict[str, Any],
+    ) -> bool:
+        """
+        Determine whether the current execution result
+        requires adaptive replanning.
+        """
+
+        if not self.revision_service.can_revise(
+            goal,
+            current_plan,
+        ):
+            return False
+
+        analysis = (
+            self.reasoner.analyze_execution_result(
+                current_plan,
+                execution_result,
+            )
+        )
+
+        return bool(
+            analysis.get(
+                "needs_revision"
+            )
+        )
+
+    def replan(
+        self,
+        goal: Goal,
+        current_plan: Plan,
+        execution_result: dict[str, Any],
+    ) -> AdaptiveReplanningResult:
+        """
+        Analyze an execution problem, create a revised Plan,
+        validate it, and activate it.
+        """
+
+        if not self.revision_service.can_revise(
+            goal,
+            current_plan,
+        ):
+            raise ValueError(
+                "The current Goal and Plan are not eligible "
+                "for adaptive replanning."
+            )
+
+        analysis = (
+            self.reasoner.analyze_execution_result(
+                current_plan,
+                execution_result,
+            )
+        )
+
+        if not analysis.get(
+            "needs_revision"
+        ):
+            raise ValueError(
+                "The execution result does not require "
+                "adaptive replanning."
+            )
+
+        revised_plan = (
+            self.planner.create_revised_plan(
+                goal,
+                current_plan,
+                analysis,
+            )
+        )
+
+        revised_plan_is_valid = (
+            self.reasoner.evaluate_plan(
+                revised_plan
+            )
+        )
+
+        if not revised_plan_is_valid:
+            raise ValueError(
+                "The revised Plan failed Reasoner validation."
+            )
+
+        revision = (
+            self.revision_service.revise_plan(
+                goal=goal,
+                current_plan=current_plan,
+                revised_plan=revised_plan,
+                reason=analysis["reason"],
+            )
+        )
+
+        return AdaptiveReplanningResult(
+            analysis=analysis,
+            revision=revision,
+            revised_plan=revised_plan,
+        )

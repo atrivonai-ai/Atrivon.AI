@@ -4,7 +4,10 @@ from atrivon.domain.models import (
     Subgoal,
     Task,
 )
-from atrivon.domain.states import PlanState
+from atrivon.domain.states import (
+    PlanState,
+    TaskState,
+)
 
 
 class Planner:
@@ -15,7 +18,7 @@ class Planner:
     - Understanding the goal category
     - Creating subgoals
     - Creating tasks
-    - Building a versioned Plan
+    - Creating revised strategies
 
     The Planner does not own the Goal lifecycle.
     The Kernel coordinates the Goal lifecycle.
@@ -37,11 +40,15 @@ class Planner:
             Goal,
         ):
             raise TypeError(
-                "Planner.create_plan() requires a Goal object."
+                "Planner.create_plan() "
+                "requires a Goal object."
             )
 
         objective = goal.objective.strip()
-        normalized_objective = objective.lower()
+
+        normalized_objective = (
+            objective.lower()
+        )
 
         print(
             f"\nCreating plan for goal: "
@@ -64,23 +71,10 @@ class Planner:
             ),
         )
 
-        for subgoal_name, tasks in subgoal_definitions:
-            subgoal = Subgoal(
-                name=subgoal_name
-            )
-
-            for task_title in tasks:
-                task = Task(
-                    title=task_title
-                )
-
-                subgoal.add_task(
-                    task
-                )
-
-            plan.add_subgoal(
-                subgoal
-            )
+        self._add_subgoals(
+            plan,
+            subgoal_definitions,
+        )
 
         self._display_plan(
             goal,
@@ -88,6 +82,221 @@ class Planner:
         )
 
         return plan
+
+    def create_revised_plan(
+        self,
+        goal: Goal,
+        current_plan: Plan,
+        analysis: dict,
+    ) -> Plan:
+        """
+        Create a revised Plan in response to an execution problem.
+
+        The revised Plan:
+        - Starts as version 1.
+        - Is later versioned by PlanRevisionService.
+        - Adds a blocker-resolution phase.
+        - Rebuilds the original strategy.
+        - Preserves completed work when task titles match.
+        """
+
+        if not isinstance(
+            goal,
+            Goal,
+        ):
+            raise TypeError(
+                "create_revised_plan() "
+                "requires a Goal object."
+            )
+
+        if not isinstance(
+            current_plan,
+            Plan,
+        ):
+            raise TypeError(
+                "create_revised_plan() "
+                "requires a Plan object."
+            )
+
+        if current_plan.goal_id != goal.id:
+            raise ValueError(
+                "Current Plan does not belong "
+                "to the provided Goal."
+            )
+
+        if not isinstance(
+            analysis,
+            dict,
+        ):
+            raise TypeError(
+                "analysis must be a dictionary."
+            )
+
+        reason = analysis.get(
+            "reason",
+            "The current Plan requires revision.",
+        )
+
+        strategy = analysis.get(
+            "strategy",
+            "Create a safer revised execution strategy.",
+        )
+
+        recommended_actions = analysis.get(
+            "recommended_actions",
+            [],
+        )
+
+        revised_plan = Plan(
+            goal_id=goal.id,
+            version=1,
+            state=PlanState.PROPOSED,
+            rationale=(
+                "Revised Plan created by the Atrivon Planner "
+                "after execution analysis."
+            ),
+            metadata={
+                "replanned_from_plan_id": (
+                    current_plan.id
+                ),
+                "replanning_trigger": (
+                    analysis.get(
+                        "trigger"
+                    )
+                ),
+                "replanning_reason": reason,
+                "replanning_strategy": strategy,
+            },
+        )
+
+        blocker_subgoal = Subgoal(
+            name="Resolve execution blockers"
+        )
+
+        actions = (
+            recommended_actions
+            if recommended_actions
+            else [
+                "Analyze the cause of the execution blocker",
+                "Resolve the execution blocker",
+                "Validate the revised execution path",
+            ]
+        )
+
+        for action in actions:
+            blocker_subgoal.add_task(
+                Task(
+                    title=action
+                )
+            )
+
+        revised_plan.add_subgoal(
+            blocker_subgoal
+        )
+
+        completed_tasks_by_title = (
+            self._get_completed_tasks_by_title(
+                current_plan
+            )
+        )
+
+        subgoal_definitions = (
+            self._build_subgoal_definitions(
+                goal.objective.strip().lower()
+            )
+        )
+
+        for subgoal_name, task_titles in (
+            subgoal_definitions
+        ):
+            subgoal = Subgoal(
+                name=subgoal_name
+            )
+
+            for task_title in task_titles:
+                task = Task(
+                    title=task_title
+                )
+
+                previous_task = (
+                    completed_tasks_by_title.get(
+                        task_title
+                    )
+                )
+
+                if previous_task is not None:
+                    task.state = (
+                        TaskState.COMPLETED
+                    )
+
+                    task.result = (
+                        previous_task.result
+                    )
+
+                subgoal.add_task(
+                    task
+                )
+
+            revised_plan.add_subgoal(
+                subgoal
+            )
+
+        return revised_plan
+
+    def _get_completed_tasks_by_title(
+        self,
+        plan: Plan,
+    ) -> dict[str, Task]:
+        """
+        Collect completed tasks from a previous Plan,
+        indexed by task title.
+
+        This allows revised Plans to preserve completed
+        work when the same task remains relevant.
+        """
+
+        completed_tasks = {}
+
+        for subgoal in plan.subgoals:
+            for task in subgoal.tasks:
+                if (
+                    task.state
+                    == TaskState.COMPLETED
+                ):
+                    completed_tasks[
+                        task.title
+                    ] = task
+
+        return completed_tasks
+
+    def _add_subgoals(
+        self,
+        plan: Plan,
+        subgoal_definitions: list[
+            tuple[str, list[str]]
+        ],
+    ) -> None:
+        """
+        Add Subgoals and Tasks to a Plan.
+        """
+
+        for subgoal_name, tasks in (
+            subgoal_definitions
+        ):
+            subgoal = Subgoal(
+                name=subgoal_name
+            )
+
+            for task_title in tasks:
+                subgoal.add_task(
+                    Task(
+                        title=task_title
+                    )
+                )
+
+            plan.add_subgoal(
+                subgoal
+            )
 
     def _build_subgoal_definitions(
         self,
@@ -316,15 +525,23 @@ class Planner:
         Display a canonical Plan in a readable format.
         """
 
-        print("\nPlan Created:")
         print(
-            f"Goal: {goal.objective}"
+            "\nPlan Created:"
         )
+
         print(
-            f"Plan Version: {plan.version}"
+            f"Goal: "
+            f"{goal.objective}"
         )
+
         print(
-            f"Plan State: {plan.state.value}"
+            f"Plan Version: "
+            f"{plan.version}"
+        )
+
+        print(
+            f"Plan State: "
+            f"{plan.state.value}"
         )
 
         for subgoal_number, subgoal in enumerate(
