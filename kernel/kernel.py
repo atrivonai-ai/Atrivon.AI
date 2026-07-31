@@ -1,24 +1,29 @@
+from typing import Any
+
+from atrivon.domain.models import Goal
+from atrivon.domain.states import GoalState
+
 from kernel.executor import Executor
 from kernel.planner import Planner
 from kernel.progress import ProgressTracker
 from kernel.reasoner import Reasoner
-from kernel.state import GoalState
 
 
 class AtrivonKernel:
     """
-    The central intelligence of Atrivon.
+    The central coordinator of Atrivon.
 
-    Every goal enters the system through the Kernel.
-    The Kernel coordinates Atrivon's intelligence modules
-    and manages the lifecycle of the goal from planning
-    through execution and progress tracking.
+    Every user goal enters through the Kernel.
 
-    The Kernel currently coordinates:
-    - Planner
-    - Reasoner
-    - Executor
-    - Progress Tracker
+    The Kernel coordinates:
+    - Goal creation
+    - Planning
+    - Reasoning
+    - Execution
+    - Progress tracking
+
+    The Kernel orchestrates the system but does not own
+    the specialized logic of these components.
     """
 
     def __init__(self):
@@ -27,17 +32,19 @@ class AtrivonKernel:
         self.executor = Executor()
         self.progress_tracker = ProgressTracker()
 
-        self.current_goal = None
+        self.current_goal: Goal | None = None
         self.current_plan = None
-        self.current_execution_result = None
-        self.current_progress = None
-        self.current_state = None
+        self.current_execution_result: dict[str, Any] | None = None
+        self.current_progress: dict[str, Any] | None = None
 
         print("Atrivon Kernel initialized.")
 
-    def process_goal(self, goal):
+    def process_goal(
+        self,
+        objective: str,
+    ) -> dict[str, Any] | None:
         """
-        Process a user goal through Atrivon's core pipeline.
+        Process a user objective through Atrivon's core lifecycle.
 
         Lifecycle:
 
@@ -51,74 +58,129 @@ class AtrivonKernel:
             ↓
         PROGRESS TRACKING
             ↓
-        COMPLETED
-
-        If planning or execution fails, the goal moves
-        to an appropriate failure state.
+        COMPLETED / BLOCKED
         """
 
-        goal = goal.strip()
+        objective = objective.strip()
 
-        if not goal:
+        if not objective:
             print("\nA goal is required.")
             return None
 
-        self.current_goal = goal
+        self.current_goal = Goal(
+            objective=objective
+        )
+
         self.current_plan = None
         self.current_execution_result = None
         self.current_progress = None
-        self.current_state = GoalState.PLANNED
 
-        print(f"\nGoal received: {goal}")
-        print(f"Goal state: {self.current_state.value}")
+        print(
+            f"\nGoal received: "
+            f"{self.current_goal.objective}"
+        )
 
-        print("Understanding the goal...")
+        print(
+            f"Goal ID: "
+            f"{self.current_goal.id}"
+        )
 
-        plan = self.planner.create_plan(goal)
+        print(
+            f"Goal state: "
+            f"{self.current_goal.state.value}"
+        )
+
+        print(
+            "Understanding the goal..."
+        )
+
+        # Create the canonical Plan.
+        plan = self.planner.create_plan(
+            self.current_goal
+        )
+
         self.current_plan = plan
 
-        print("\nPlan received by the Kernel.")
+        # Link the Plan to the Goal.
+        self.current_goal.add_plan(
+            plan
+        )
 
-        plan_approved = self.reasoner.evaluate_plan(plan)
+        print(
+            "\nPlan received by the Kernel."
+        )
+
+        # Evaluate the Plan.
+        plan_approved = (
+            self.reasoner.evaluate_plan(
+                plan
+            )
+        )
 
         if not plan_approved:
-            self.current_state = GoalState.NEEDS_REVISION
+            self.current_goal.update_state(
+                GoalState.NEEDS_REVISION
+            )
 
             print(
-                f"Goal state: {self.current_state.value}"
+                f"Goal state: "
+                f"{self.current_goal.state.value}"
             )
+
             print(
                 "Execution blocked: "
                 "the plan needs revision."
             )
 
-            return None
+            return {
+                "goal_id": self.current_goal.id,
+                "plan_id": plan.id,
+                "status": "needs_revision",
+            }
 
-        self.current_state = GoalState.APPROVED
+        # Plan approved.
+        self.current_goal.update_state(
+            GoalState.APPROVED
+        )
 
         print(
-            f"Goal state: {self.current_state.value}"
+            f"Goal state: "
+            f"{self.current_goal.state.value}"
         )
-        print("Plan approved.")
-
-        self.current_state = GoalState.IN_PROGRESS
 
         print(
-            f"Goal state: {self.current_state.value}"
-        )
-        print("Beginning execution...")
-
-        execution_result = self.executor.execute_plan(plan)
-
-        self.current_execution_result = execution_result
-
-        execution_status = execution_result.get(
-            "status"
+            "Plan approved."
         )
 
+        # Begin execution.
+        self.current_goal.update_state(
+            GoalState.IN_PROGRESS
+        )
+
+        print(
+            f"Goal state: "
+            f"{self.current_goal.state.value}"
+        )
+
+        print(
+            "Beginning execution..."
+        )
+
+        execution_result = (
+            self.executor.execute_plan(
+                plan
+            )
+        )
+
+        self.current_execution_result = (
+            execution_result
+        )
+
+        # Calculate progress directly from
+        # the canonical Plan and its Task states.
         self.current_progress = (
             self.progress_tracker.calculate_progress(
-                execution_result
+                plan
             )
         )
 
@@ -126,61 +188,93 @@ class AtrivonKernel:
             self.current_progress
         )
 
+        execution_status = (
+            execution_result.get(
+                "status"
+            )
+        )
+
         if execution_status == "completed":
-            self.current_state = GoalState.COMPLETED
+            self.current_goal.update_state(
+                GoalState.COMPLETED
+            )
 
             print(
-                f"\nGoal state: {self.current_state.value}"
+                f"\nGoal state: "
+                f"{self.current_goal.state.value}"
             )
-            print("Goal completed successfully.")
+
+            print(
+                "Goal completed successfully."
+            )
 
         else:
-            self.current_state = GoalState.BLOCKED
+            self.current_goal.update_state(
+                GoalState.BLOCKED
+            )
 
             print(
-                f"\nGoal state: {self.current_state.value}"
+                f"\nGoal state: "
+                f"{self.current_goal.state.value}"
             )
+
             print(
                 "Execution could not be completed."
             )
 
-        return execution_result
+        return {
+            "goal": self.current_goal.to_dict(),
+            "plan": self.current_plan.to_dict(),
+            "execution_result": (
+                self.current_execution_result
+            ),
+            "progress": (
+                self.current_progress
+            ),
+        }
 
-    def get_current_state(self):
+    def get_current_goal(
+        self,
+    ) -> Goal | None:
         """
-        Return the current state of the active goal.
-        """
-
-        if self.current_state is None:
-            return None
-
-        return self.current_state.value
-
-    def get_current_goal(self):
-        """
-        Return the current goal.
+        Return the current canonical Goal object.
         """
 
         return self.current_goal
 
     def get_current_plan(self):
         """
-        Return the current structured plan.
+        Return the current canonical Plan object.
         """
 
         return self.current_plan
 
-    def get_current_execution_result(self):
+    def get_current_execution_result(
+        self,
+    ) -> dict[str, Any] | None:
         """
-        Return the latest execution result, including
-        subgoal and task-level execution states.
+        Return the latest execution result.
         """
 
         return self.current_execution_result
 
-    def get_current_progress(self):
+    def get_current_progress(
+        self,
+    ) -> dict[str, Any] | None:
         """
-        Return the latest progress report for the active goal.
+        Return the latest progress report.
         """
 
         return self.current_progress
+
+    def get_current_state(
+        self,
+    ) -> str | None:
+        """
+        Return the current Goal lifecycle state.
+        """
+
+        if self.current_goal is None:
+            return None
+
+        return self.current_goal.state.value

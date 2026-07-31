@@ -1,164 +1,228 @@
-from kernel.task_state import TaskState
+from typing import Any
+
+from atrivon.domain.models import Plan
+from atrivon.domain.states import TaskState
 
 
 class ProgressTracker:
     """
-    The ProgressTracker calculates progress for Atrivon's
-    goals, subgoals, and tasks.
+    Calculates progress for canonical Atrivon Plan objects.
 
-    Progress is calculated from actual task states.
-    It does not use manually assigned percentages.
+    Progress is derived from the actual lifecycle states of
+    canonical Task objects.
+
+    The ProgressTracker does not own task state.
+    The domain models remain the source of truth.
     """
 
     def __init__(self):
         print("Progress Tracker module loaded.")
 
-    def calculate_progress(self, execution_result):
+    def calculate_progress(
+        self,
+        plan: Plan,
+    ) -> dict[str, Any]:
         """
-        Calculate overall goal progress from task states.
+        Calculate progress directly from a canonical Plan.
 
         Returns:
             A structured progress report containing:
-            - Goal
-            - Overall progress percentage
-            - Total tasks
-            - Completed tasks
+
+            - Plan identity
+            - Goal identity
+            - Plan version
+            - Overall progress
+            - Task counts
             - Subgoal progress
         """
 
-        if not isinstance(execution_result, dict):
-            return {
-                "goal": None,
-                "progress": 0.0,
-                "total_tasks": 0,
-                "completed_tasks": 0,
-                "subgoals": [],
-            }
-
-        goal = execution_result.get("goal")
-        subgoals = execution_result.get("subgoals", [])
-
-        if not isinstance(subgoals, list):
-            subgoals = []
-
-        subgoal_results = []
+        if not isinstance(
+            plan,
+            Plan,
+        ):
+            raise TypeError(
+                "ProgressTracker.calculate_progress() "
+                "requires a Plan object."
+            )
 
         total_tasks = 0
         completed_tasks = 0
+        in_progress_tasks = 0
+        blocked_tasks = 0
+        failed_tasks = 0
 
-        for subgoal in subgoals:
-            subgoal_progress = self._calculate_subgoal_progress(
-                subgoal
+        subgoal_reports = []
+
+        for subgoal in plan.subgoals:
+            subgoal_total_tasks = len(
+                subgoal.tasks
             )
 
-            subgoal_results.append(subgoal_progress)
+            subgoal_completed_tasks = sum(
+                1
+                for task in subgoal.tasks
+                if task.state
+                == TaskState.COMPLETED
+            )
 
-            total_tasks += subgoal_progress["total_tasks"]
-            completed_tasks += subgoal_progress["completed_tasks"]
+            subgoal_in_progress_tasks = sum(
+                1
+                for task in subgoal.tasks
+                if task.state
+                == TaskState.IN_PROGRESS
+            )
+
+            subgoal_blocked_tasks = sum(
+                1
+                for task in subgoal.tasks
+                if task.state
+                == TaskState.BLOCKED
+            )
+
+            subgoal_failed_tasks = sum(
+                1
+                for task in subgoal.tasks
+                if task.state
+                == TaskState.FAILED
+            )
+
+            total_tasks += (
+                subgoal_total_tasks
+            )
+
+            completed_tasks += (
+                subgoal_completed_tasks
+            )
+
+            in_progress_tasks += (
+                subgoal_in_progress_tasks
+            )
+
+            blocked_tasks += (
+                subgoal_blocked_tasks
+            )
+
+            failed_tasks += (
+                subgoal_failed_tasks
+            )
+
+            if subgoal_total_tasks == 0:
+                subgoal_progress = 0.0
+            else:
+                subgoal_progress = (
+                    subgoal_completed_tasks
+                    / subgoal_total_tasks
+                ) * 100
+
+            subgoal_reports.append(
+                {
+                    "subgoal_id": subgoal.id,
+                    "subgoal": subgoal.name,
+                    "progress": round(
+                        subgoal_progress,
+                        2,
+                    ),
+                    "total_tasks": (
+                        subgoal_total_tasks
+                    ),
+                    "completed_tasks": (
+                        subgoal_completed_tasks
+                    ),
+                    "in_progress_tasks": (
+                        subgoal_in_progress_tasks
+                    ),
+                    "blocked_tasks": (
+                        subgoal_blocked_tasks
+                    ),
+                    "failed_tasks": (
+                        subgoal_failed_tasks
+                    ),
+                    "state": (
+                        subgoal.state.value
+                    ),
+                }
+            )
 
         if total_tasks == 0:
             overall_progress = 0.0
         else:
             overall_progress = (
-                completed_tasks / total_tasks
+                completed_tasks
+                / total_tasks
             ) * 100
 
         return {
-            "goal": goal,
-            "progress": round(overall_progress, 2),
+            "plan_id": plan.id,
+            "goal_id": plan.goal_id,
+            "plan_version": plan.version,
+            "progress": round(
+                overall_progress,
+                2,
+            ),
             "total_tasks": total_tasks,
             "completed_tasks": completed_tasks,
-            "subgoals": subgoal_results,
+            "in_progress_tasks": (
+                in_progress_tasks
+            ),
+            "blocked_tasks": (
+                blocked_tasks
+            ),
+            "failed_tasks": (
+                failed_tasks
+            ),
+            "subgoals": subgoal_reports,
         }
 
-    def _calculate_subgoal_progress(self, subgoal):
+    def display_progress(
+        self,
+        progress_report: dict[str, Any],
+    ) -> None:
         """
-        Calculate progress for a single subgoal.
-        """
-
-        if not isinstance(subgoal, dict):
-            return {
-                "subgoal": None,
-                "progress": 0.0,
-                "total_tasks": 0,
-                "completed_tasks": 0,
-                "status": "invalid",
-            }
-
-        subgoal_name = subgoal.get("subgoal")
-        tasks = subgoal.get("tasks", [])
-
-        if not isinstance(tasks, list):
-            tasks = []
-
-        total_tasks = len(tasks)
-
-        completed_tasks = sum(
-            1
-            for task in tasks
-            if isinstance(task, dict)
-            and task.get("state")
-            == TaskState.COMPLETED.value
-        )
-
-        if total_tasks == 0:
-            progress = 0.0
-            status = "pending"
-        else:
-            progress = (
-                completed_tasks / total_tasks
-            ) * 100
-
-            if completed_tasks == total_tasks:
-                status = "completed"
-            elif completed_tasks == 0:
-                status = "pending"
-            else:
-                status = "in_progress"
-
-        return {
-            "subgoal": subgoal_name,
-            "progress": round(progress, 2),
-            "total_tasks": total_tasks,
-            "completed_tasks": completed_tasks,
-            "status": status,
-        }
-
-    def display_progress(self, progress_report):
-        """
-        Display the progress report in a readable format.
+        Display a progress report in a readable format.
         """
 
         print("\nProgress Report")
 
-        goal = progress_report.get("goal")
-
-        if goal:
-            print(f"Goal: {goal}")
-
-        overall_progress = progress_report.get(
-            "progress",
-            0.0,
+        print(
+            f"Plan ID: "
+            f"{progress_report.get('plan_id')}"
         )
 
-        completed_tasks = progress_report.get(
-            "completed_tasks",
-            0,
+        print(
+            f"Goal ID: "
+            f"{progress_report.get('goal_id')}"
         )
 
-        total_tasks = progress_report.get(
-            "total_tasks",
-            0,
+        print(
+            f"Plan Version: "
+            f"{progress_report.get('plan_version')}"
         )
 
         print(
             f"Overall Progress: "
-            f"{overall_progress}%"
+            f"{progress_report.get('progress', 0.0)}%"
         )
 
         print(
             f"Tasks Completed: "
-            f"{completed_tasks}/{total_tasks}"
+            f"{progress_report.get('completed_tasks', 0)}"
+            f"/"
+            f"{progress_report.get('total_tasks', 0)}"
+        )
+
+        print(
+            f"Tasks In Progress: "
+            f"{progress_report.get('in_progress_tasks', 0)}"
+        )
+
+        print(
+            f"Tasks Blocked: "
+            f"{progress_report.get('blocked_tasks', 0)}"
+        )
+
+        print(
+            f"Tasks Failed: "
+            f"{progress_report.get('failed_tasks', 0)}"
         )
 
         print("\nSubgoal Progress:")
@@ -170,5 +234,5 @@ class ProgressTracker:
             print(
                 f"- {subgoal['subgoal']}: "
                 f"{subgoal['progress']}% "
-                f"({subgoal['status']})"
+                f"({subgoal['state']})"
             )
