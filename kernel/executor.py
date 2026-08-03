@@ -6,8 +6,17 @@ from atrivon.domain.states import (
     SubgoalState,
     TaskState,
 )
+from atrivon.execution.actions import (
+    ActionStatus,
+)
 from atrivon.execution.dependencies import (
     DependencyResolver,
+)
+from atrivon.execution.service import (
+    CapabilityExecutionService,
+)
+from atrivon.execution.task_actions import (
+    TaskActionResolver,
 )
 
 
@@ -20,18 +29,18 @@ class Executor:
     - Resume-aware
     - Dependency-aware
     - State-aware
+    - Capability-aware
+
+    Tasks with explicit Action metadata are executed through
+    the CapabilityExecutionService.
+
+    Tasks without Action metadata continue through the existing
+    simulated execution framework until they are connected to
+    real capabilities.
 
     Completed tasks are never executed again.
 
     Tasks are only executed when all dependencies are completed.
-
-    The Executor does not decide strategy.
-    It executes the Plan according to the dependency and
-    lifecycle rules defined by Atrivon's execution architecture.
-
-    The current task execution itself remains a controlled
-    execution framework. Real-world actions will be introduced
-    through future execution and automation capabilities.
     """
 
     EXECUTABLE_TASK_STATES = {
@@ -47,9 +56,22 @@ class Executor:
         TaskState.NEEDS_REVISION,
     }
 
-    def __init__(self):
+    def __init__(
+        self,
+        capability_execution_service: (
+            CapabilityExecutionService | None
+        ) = None,
+    ):
         self.dependency_resolver = (
             DependencyResolver()
+        )
+
+        self.task_action_resolver = (
+            TaskActionResolver()
+        )
+
+        self.capability_execution_service = (
+            capability_execution_service
         )
 
         print(
@@ -68,8 +90,10 @@ class Executor:
         1. Validates task dependencies.
         2. Finds tasks that are ready.
         3. Executes ready tasks.
-        4. Re-evaluates dependencies.
-        5. Continues until no more executable work remains.
+        4. Uses real capabilities when a Task defines an Action.
+        5. Uses simulated execution otherwise.
+        6. Re-evaluates dependencies.
+        7. Continues until no more executable work remains.
 
         Completed tasks are preserved and skipped.
 
@@ -97,7 +121,7 @@ class Executor:
 
             return self._failed_result(
                 "Execution failed: "
-                "plan has no goal ID.",
+                "plan has no Goal ID.",
                 plan=plan,
             )
 
@@ -108,7 +132,7 @@ class Executor:
 
             return self._failed_result(
                 "Execution failed: "
-                "plan contains no subgoals.",
+                "plan contains no Subgoals.",
                 plan=plan,
             )
 
@@ -151,6 +175,7 @@ class Executor:
                 "execution_summary": {
                     "executed_tasks": 0,
                     "skipped_tasks": 0,
+                    "failed_tasks": 0,
                     "dependency_blocked_tasks": 0,
                     "total_tasks": self._count_tasks(
                         plan
@@ -188,6 +213,7 @@ class Executor:
 
         executed_tasks = 0
         skipped_tasks = 0
+        failed_tasks = 0
         execution_passes = 0
 
         all_tasks = self._collect_tasks(
@@ -258,6 +284,12 @@ class Executor:
                     "executed"
                 ):
                     executed_tasks += 1
+                    progress_made = True
+
+                if result.get(
+                    "failed"
+                ):
+                    failed_tasks += 1
                     progress_made = True
 
             if not progress_made:
@@ -433,6 +465,7 @@ class Executor:
             "execution_summary": {
                 "executed_tasks": executed_tasks,
                 "skipped_tasks": skipped_tasks,
+                "failed_tasks": failed_tasks,
                 "dependency_blocked_tasks": len(
                     dependency_blocked_tasks
                 ),
@@ -448,12 +481,14 @@ class Executor:
         """
         Execute one dependency-ready Task.
 
+        If the Task defines an explicit Action and a
+        CapabilityExecutionService is available, the real
+        Capability execution path is used.
+
+        Otherwise the existing simulated execution framework
+        is used.
+
         Completed tasks are skipped.
-
-        Pending, in-progress, and paused tasks continue execution.
-
-        Tasks in blocked, failed, requires-input, or needs-revision
-        states are not executed automatically.
         """
 
         print(
@@ -479,6 +514,7 @@ class Executor:
                 "state": task.state.value,
                 "result": task.result,
                 "executed": False,
+                "failed": False,
                 "skipped": True,
                 "skip_reason": (
                     "Task was already completed."
@@ -504,6 +540,10 @@ class Executor:
                 "state": task.state.value,
                 "result": task.result,
                 "executed": False,
+                "failed": (
+                    task.state
+                    == TaskState.FAILED
+                ),
                 "skipped": True,
                 "skip_reason": (
                     "Task requires resolution "
@@ -519,6 +559,283 @@ class Executor:
                 f"Unsupported task state: "
                 f"{task.state.value}"
             )
+
+        if (
+            self.task_action_resolver.has_action(
+                task
+            )
+        ):
+            return (
+                self._execute_action_task(
+                    task
+                )
+            )
+
+        return (
+            self._execute_simulated_task(
+                task
+            )
+        )
+
+    def _execute_action_task(
+        self,
+        task: Task,
+    ) -> dict[str, Any]:
+        """
+        Execute a Task through the real Capability execution path.
+        """
+
+        print(
+            "  Execution mode: real capability"
+        )
+
+        if (
+            self.capability_execution_service
+            is None
+        ):
+            task.update_state(
+                TaskState.FAILED
+            )
+
+            error = (
+                "Task defines a real action, "
+                "but no CapabilityExecutionService "
+                "is configured."
+            )
+
+            task.set_result(
+                {
+                    "error": error
+                }
+            )
+
+            print(
+                f"  Task failed: "
+                f"{error}"
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": True,
+                "skipped": False,
+                "execution_mode": "real_capability",
+            }
+
+        try:
+            request = (
+                self.task_action_resolver.resolve(
+                    task
+                )
+            )
+
+        except Exception as error:
+            task.update_state(
+                TaskState.FAILED
+            )
+
+            task.set_result(
+                {
+                    "error": str(
+                        error
+                    )
+                }
+            )
+
+            print(
+                f"  Task action resolution failed: "
+                f"{error}"
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": True,
+                "skipped": False,
+                "execution_mode": "real_capability",
+            }
+
+        if request is None:
+            task.update_state(
+                TaskState.FAILED
+            )
+
+            error = (
+                "Task action metadata could not "
+                "be resolved into an ActionRequest."
+            )
+
+            task.set_result(
+                {
+                    "error": error
+                }
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": True,
+                "skipped": False,
+                "execution_mode": "real_capability",
+            }
+
+        print(
+            f"  Action type: "
+            f"{request.action_type}"
+        )
+
+        print(
+            f"  Action target: "
+            f"{request.target}"
+        )
+
+        task.update_state(
+            TaskState.IN_PROGRESS
+        )
+
+        action_result = (
+            self.capability_execution_service.execute(
+                request
+            )
+        )
+
+        task.set_result(
+            action_result.to_dict()
+        )
+
+        if (
+            action_result.status
+            == ActionStatus.SUCCEEDED
+        ):
+            task.update_state(
+                TaskState.COMPLETED
+            )
+
+            print(
+                "  Action status: succeeded"
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": False,
+                "skipped": False,
+                "execution_mode": "real_capability",
+                "action_id": (
+                    action_result.action_id
+                ),
+                "action_status": (
+                    action_result.status.value
+                ),
+            }
+
+        if (
+            action_result.status
+            == ActionStatus.BLOCKED
+        ):
+            task.update_state(
+                TaskState.BLOCKED
+            )
+
+            print(
+                "  Action status: blocked"
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": False,
+                "skipped": False,
+                "execution_mode": "real_capability",
+                "action_id": (
+                    action_result.action_id
+                ),
+                "action_status": (
+                    action_result.status.value
+                ),
+            }
+
+        if (
+            action_result.status
+            == ActionStatus.REQUIRES_INPUT
+        ):
+            task.update_state(
+                TaskState.REQUIRES_INPUT
+            )
+
+            print(
+                "  Action status: requires_input"
+            )
+
+            return {
+                "task_id": task.id,
+                "task": task.title,
+                "state": task.state.value,
+                "result": task.result,
+                "executed": True,
+                "failed": False,
+                "skipped": False,
+                "execution_mode": "real_capability",
+                "action_id": (
+                    action_result.action_id
+                ),
+                "action_status": (
+                    action_result.status.value
+                ),
+            }
+
+        task.update_state(
+            TaskState.FAILED
+        )
+
+        print(
+            f"  Action status: "
+            f"{action_result.status.value}"
+        )
+
+        return {
+            "task_id": task.id,
+            "task": task.title,
+            "state": task.state.value,
+            "result": task.result,
+            "executed": True,
+            "failed": True,
+            "skipped": False,
+            "execution_mode": "real_capability",
+            "action_id": (
+                action_result.action_id
+            ),
+            "action_status": (
+                action_result.status.value
+            ),
+        }
+
+    def _execute_simulated_task(
+        self,
+        task: Task,
+    ) -> dict[str, Any]:
+        """
+        Execute a Task through the existing simulated framework.
+        """
+
+        print(
+            "  Execution mode: simulated"
+        )
 
         print(
             f"  Task state: "
@@ -558,7 +875,9 @@ class Executor:
             "state": task.state.value,
             "result": task.result,
             "executed": True,
+            "failed": False,
             "skipped": False,
+            "execution_mode": "simulated",
         }
 
     def _determine_subgoal_status(
@@ -572,7 +891,9 @@ class Executor:
         """
 
         if not subgoal.tasks:
-            return SubgoalState.BLOCKED.value
+            return (
+                SubgoalState.BLOCKED.value
+            )
 
         task_states = {
             task.state
@@ -699,7 +1020,9 @@ class Executor:
         """
 
         return sum(
-            len(subgoal.tasks)
+            len(
+                subgoal.tasks
+            )
             for subgoal in plan.subgoals
         )
 
@@ -729,9 +1052,12 @@ class Executor:
             "execution_summary": {
                 "executed_tasks": 0,
                 "skipped_tasks": 0,
+                "failed_tasks": 0,
                 "dependency_blocked_tasks": 0,
                 "total_tasks": (
-                    self._count_tasks(plan)
+                    self._count_tasks(
+                        plan
+                    )
                     if plan is not None
                     else 0
                 ),
